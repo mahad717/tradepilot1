@@ -58,6 +58,7 @@ export function Terminal() {
 
   const [candidates, setCandidates] = useState<import("@/lib/ict/types").SignalCandidate[]>([]);
   const [signalsNote, setSignalsNote] = useState("");
+  const [noTradeReasons, setNoTradeReasons] = useState<string[]>([]);
   const [signalsLoading, setSignalsLoading] = useState(false);
   const [signalsError, setSignalsError] = useState<string | null>(null);
   const [savedSignals, setSavedSignals] = useState<SavedSignalRow[]>([]);
@@ -105,6 +106,7 @@ export function Terminal() {
       if (!res.ok) throw new Error(json.error ?? "Signals unavailable");
       setCandidates(json.candidates ?? []);
       setSignalsNote(json.note ?? "");
+      setNoTradeReasons(json.noTradeReasons ?? []);
     } catch (e) {
       setSignalsError(e instanceof Error ? e.message : "Signals unavailable");
     } finally {
@@ -254,6 +256,7 @@ export function Terminal() {
             loading={signalsLoading}
             error={signalsError}
             note={signalsNote}
+            noTradeReasons={noTradeReasons}
             savedSignals={savedSignals}
             onRefreshSaved={loadSaved}
           />

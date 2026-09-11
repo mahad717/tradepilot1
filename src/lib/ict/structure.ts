@@ -64,3 +64,44 @@ export function analyzeStructure(candles: Candle[], lookback = 2): StructureResu
 
   return { trend, events: events.slice(-12), lastSwingHigh, lastSwingLow };
 }
+
+export interface StructureWalk {
+  /** FULL causal event list (not truncated) — consumers must respect `index`. */
+  events: StructureEvent[];
+  /** trend as known at bar i (only events with event.index <= i) */
+  trendAt: (i: number) => Trend;
+}
+
+/** Same walk as analyzeStructure but returns every event + a causal trend lookup. */
+export function structureWalkSeries(candles: Candle[], lookback = 2): StructureWalk {
+  const all: Swing[] = findSwings(candles, lookback);
+  const events: StructureEvent[] = [];
+  const trendByIndex = new Array<Trend>(candles.length).fill("NEUTRAL");
+
+  let trend: Trend = "NEUTRAL";
+  let pendingHigh: Swing | null = null;
+  let pendingLow: Swing | null = null;
+  let cursor = 0;
+
+  for (let i = lookback + 1; i < candles.length; i++) {
+    while (cursor < all.length && all[cursor].index + lookback <= i) {
+      const s = all[cursor];
+      if (s.type === "HIGH") pendingHigh = s;
+      else pendingLow = s;
+      cursor++;
+    }
+    const close = candles[i].close;
+    if (pendingHigh && close > pendingHigh.price) {
+      events.push({ index: i, time: candles[i].time, type: trend === "BEARISH" ? "MSS" : "BOS", direction: "BULLISH", level: pendingHigh.price });
+      trend = "BULLISH";
+      pendingHigh = null;
+    } else if (pendingLow && close < pendingLow.price) {
+      events.push({ index: i, time: candles[i].time, type: trend === "BULLISH" ? "MSS" : "BOS", direction: "BEARISH", level: pendingLow.price });
+      trend = "BEARISH";
+      pendingLow = null;
+    }
+    trendByIndex[i] = trend;
+  }
+
+  return { events, trendAt: (i: number) => trendByIndex[Math.max(0, Math.min(i, candles.length - 1))] };
+}

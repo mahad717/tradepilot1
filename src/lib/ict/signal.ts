@@ -1,210 +1,124 @@
-// Rule-based signal generation from the ICT analysis snapshot.
-//
-// A candidate requires confluence of:
-//   1. HTF structural bias (4H / 1D trend from BOS-MSS engine)
-//   2. A recent liquidity sweep on the analysis timeframe (stop-hunt)
-//   3. Price trading back into an unmitigated FVG or Order Block (entry zone)
-//   4. Discount (for longs) / premium (for shorts) positioning
-// Confidence is a transparent 0-100 score; every candidate carries plain-
-// language rationale bullets. No guarantees — rule-based analysis only.
+// Rule-based signal generation v2 — built on the SAME sequence-verified
+// setup builder as the backtester (spec #6, #36 "backtest vs replay
+// consistency"). A signal exists only when the full ordered chain holds on
+// the last CLOSED bar:
+//   HTF bias → discount/premium → sweep+rejection → displacement → MSS/BOS
+//   → fresh FVG/OB → retracement entry
+// otherwise the result is an explicit NO TRADE (spec #31).
 import "server-only";
-import { analyze } from "./engine";
-import { computeSmt } from "./smt";
-import type { SignalCandidate, Trend, Zone } from "./types";
+import { getCandles } from "@/lib/market";
 import type { IntervalKey, SymbolKey } from "@/lib/market/types";
+import { buildSeriesContext, buildSetupAt, DEFAULT_CONFIG, type CooldownState } from "./sequence";
+import { smtSeries } from "./smtseries";
+import { SESSION_LABELS } from "./sessions";
+import type { SignalCandidate, Tier } from "./types";
 
 interface BuildArgs {
   symbol: SymbolKey;
   interval: IntervalKey;
 }
 
-function nearestZone(
-  price: number,
-  zones: Zone[],
-  side: "LONG" | "SHORT"
-): Zone | null {
-  const relevant = zones.filter((z) =>
-    side === "LONG" ? z.direction === "BULLISH" : z.direction === "BEARISH"
-  );
-  let best: Zone | null = null;
-  let bestDist = Infinity;
-  for (const z of relevant) {
-    const mid = (z.top + z.bottom) / 2;
-    const dist = Math.abs(price - mid);
-    // entry zone must be touchable: for longs below price, for shorts above
-    const touchable =
-      side === "LONG" ? z.bottom <= price * 1.001 && z.top <= price * 1.02 : z.top >= price * 0.999 && z.bottom >= price * 0.98;
-    if (!touchable) continue;
-    if (dist < bestDist) {
-      best = z;
-      bestDist = dist;
-    }
-  }
-  return best;
+function tierToGrade(tier: Tier): "A" | "B" | "C" {
+  if (tier === "A+" || tier === "A") return "A";
+  if (tier === "B") return "B";
+  return "C";
 }
 
 export async function generateSignals({
   symbol,
   interval,
-}: BuildArgs): Promise<{ candidates: SignalCandidate[]; evaluatedAt: number; note: string }> {
-  const [{ snapshot, htfTrend }, smt] = await Promise.all([
-    analyze(symbol, interval),
-    computeSmt("15min"),
+}: BuildArgs): Promise<{ candidates: SignalCandidate[]; evaluatedAt: number; note: string; noTradeReasons: string[] }> {
+  const [{ candles, source }, silver] = await Promise.all([
+    getCandles(symbol, interval, 400),
+    getCandles("XAGUSD", interval, 400).catch(() => null),
   ]);
 
-  const price = snapshot.lastPrice;
+  if (candles.length < 120) throw new Error("Insufficient candles for analysis");
+
+  const smtEvents = silver && silver.candles.length > 40 ? smtSeries(candles, silver.candles) : [];
+  const ctx = buildSeriesContext(symbol, interval, candles, smtEvents);
+
+  // evaluate on the last CLOSED bar (never the forming candle — no repaint)
+  const intervalSec = ctx.intervalSec;
+  const now = Math.floor(Date.now() / 1000);
+  let barIndex = candles.length - 1;
+  if (candles[barIndex].time + intervalSec > now && barIndex > 1) barIndex = barIndex - 1;
+
+  const cooldown: CooldownState = {
+    usedSweepKeys: new Set(),
+    blacklistedZones: new Set(),
+    lastSignalIndex: -Infinity,
+  };
+
+  const { setup, rejection } = buildSetupAt(ctx, barIndex, DEFAULT_CONFIG, cooldown);
   const candidates: SignalCandidate[] = [];
 
-  const recentSweeps = snapshot.sweeps.filter(
-    (s) => Date.now() / 1000 - s.time < 6 * 3600
-  );
-
-  for (const side of ["LONG", "SHORT"] as const) {
-    const wantedDirection = side === "LONG" ? "BULLISH" : "BEARISH";
-    const biasAligned = htfTrend === wantedDirection;
-
-    const sweep = [...recentSweeps]
-      .reverse()
-      .find((s) => (side === "LONG" ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE"));
-    if (!sweep) continue;
-
-    const zone =
-      nearestZone(price, snapshot.orderBlocks, side) ??
-      nearestZone(price, snapshot.fvg, side);
-    if (!zone) continue;
-
-    const inRange = snapshot.range;
-    const rangeAligned =
-      side === "LONG"
-        ? inRange && inRange.zone !== "PREMIUM"
-        : inRange && inRange.zone !== "DISCOUNT";
-    if (!rangeAligned) continue;
-
-    // --- scoring (transparent additive model) ---
-    let score = 0;
-    const rationale: string[] = [];
-
-    if (biasAligned) {
-      score += 30;
-      rationale.push(
-        `HTF structure is ${htfTrend.toLowerCase()} (latest BOS/MSS confirms continuation).`
-      );
-    } else if (htfTrend === "NEUTRAL") {
-      score += 10;
-      rationale.push("HTF structure is neutral — this is a range play, not trend continuation.");
-    } else {
-      rationale.push(
-        `Counter-trend: HTF bias is ${htfTrend.toLowerCase()} while setup is ${wantedDirection.toLowerCase()}.`
-      );
-    }
-
-    score += 20;
-    rationale.push(
-      `${side === "LONG" ? "Sellside" : "Buyside"} liquidity swept at ${sweep.level.toFixed(2)} — stop-hunt signature detected.`
-    );
-
-    const killzone = snapshot.killzone;
-    if (killzone) {
-      score += 15;
-      rationale.push(`${killzone.name} is active (${killzone.startUtc}–${killzone.endUtc} UTC).`);
-    } else {
-      rationale.push("Outside all kill zones — timing filter is neutral.");
-    }
-
-    if (inRange) {
-      const zoneOk = side === "LONG" ? inRange.zone === "DISCOUNT" : inRange.zone === "PREMIUM";
-      if (zoneOk) {
-        score += 15;
-        rationale.push(
-          `Price in ${inRange.zone.toLowerCase()} half of the dealing range (${inRange.positionPct}% of range).`
-        );
-      } else if (inRange.zone === "EQUILIBRIUM") {
-        score += 8;
-        rationale.push("Price at equilibrium of the dealing range.");
-      }
-    }
-
-    const confluence = snapshot.orderBlocks.includes(zone) && snapshot.fvg.some(
-      (f) =>
-        f.direction === zone.direction &&
-        f.bottom <= zone.top &&
-        f.top >= zone.bottom
-    );
-    if (confluence) {
-      score += 10;
-      rationale.push(
-        `Entry zone overlaps an unmitigated ${zone.direction.toLowerCase()} FVG and order block (confluence).`
-      );
-    }
-
-    const smtAligned = smt.divergences.some(
-      (d) => d.type === (side === "LONG" ? "BULLISH" : "BEARISH")
-    );
-    if (smtAligned) {
-      score += 10;
-      rationale.push(
-        `XAU/XAG SMT ${side === "LONG" ? "bullish" : "bearish"} divergence supports the setup.`
-      );
-    }
-
-    // --- levels ---
-    const zoneMid = (zone.top + zone.bottom) / 2;
-    const entry = Math.round(zoneMid * 100) / 100;
-    const buffer = Math.max(snapshot.atr * 0.35, entry * 0.0004);
-    const stopLoss =
-      side === "LONG"
-        ? Math.round(Math.min(zone.bottom, sweep.extreme) - buffer) * 100 / 100
-        : Math.round((Math.max(zone.top, sweep.extreme) + buffer) * 100) / 100;
-
-    const risk = Math.abs(entry - stopLoss);
-    const opposingPool = snapshot.pools.find((p) =>
-      side === "LONG" ? p.type === "EQH" && p.price > entry : p.type === "EQL" && p.price < entry
-    );
-
-    const targets = [
-      Math.round((side === "LONG" ? entry + risk * 1.5 : entry - risk * 1.5) * 100) / 100,
-      Math.round((side === "LONG" ? entry + risk * 2.5 : entry - risk * 2.5) * 100) / 100,
-      Math.round((side === "LONG" ? entry + risk * 4 : entry - risk * 4) * 100) / 100,
-    ];
-    if (opposingPool) {
-      // replace TP2 with the structural liquidity pool if it's between 2R and 4R
-      const poolR = Math.abs(opposingPool.price - entry) / risk;
-      if (poolR > 2 && poolR < 4.2) {
-        targets[1] = Math.round(opposingPool.price * 100) / 100;
-        rationale.push(
-          `TP2 anchored to ${opposingPool.type === "EQH" ? "equal highs" : "equal lows"} pool at ${opposingPool.price.toFixed(2)}.`
-        );
-      }
-    }
-
-    const confidence = Math.min(100, score);
-    const grade: SignalCandidate["grade"] = confidence >= 75 ? "A" : confidence >= 55 ? "B" : "C";
-
+  if (setup && setup.tier !== "NO_TRADE") {
     candidates.push({
-      id: `${symbol}-${interval}-${side}-${Math.floor(Date.now() / 60000)}`,
+      id: `${symbol}-${interval}-${setup.side}-${Math.floor(Date.now() / 60000)}`,
       symbol,
       interval,
-      side,
-      entry,
-      stopLoss,
-      targets,
-      rrToTarget2: Math.round((Math.abs(targets[1] - entry) / risk) * 10) / 10,
-      confidence,
-      grade,
-      rationale,
-      htfTrend,
+      side: setup.side,
+      entry: Math.round(setup.entry * 100) / 100,
+      stopLoss: Math.round(setup.initialStop * 100) / 100,
+      targets: setup.targets.map((t) => Math.round(t.price * 100) / 100),
+      targetSources: setup.targets.map((t) => t.source),
+      rrToTarget2: setup.targets[1]?.rr ?? setup.rrToFinal,
+      rrToFinal: setup.rrToFinal,
+      confidence: setup.totalScore,
+      grade: tierToGrade(setup.tier),
+      tier: setup.tier,
+      scores: setup.scores,
+      sequence: setup.events,
+      volRegime: setup.volRegime,
+      mktRegime: setup.mktRegime,
+      rationale: setup.rationale,
+      htfTrend: setup.htfBias,
       createdAt: Date.now(),
-      killzone: killzone?.name ?? null,
-      smtAligned,
+      killzone: SESSION_LABELS[setup.session] ?? setup.session,
+      smtAligned: setup.smtAligned,
     });
   }
 
-  candidates.sort((a, b) => b.confidence - a.confidence);
+  const noTradeReasons: string[] = [];
+  if (!setup) {
+    if (rejection) noTradeReasons.push(reasonLabel(rejection));
+  } else if (setup.tier === "NO_TRADE") {
+    noTradeReasons.push(`Sequence matched but scored ${setup.totalScore}/100 — below the tier-B (70) threshold`, ...setup.rejections);
+  }
 
   return {
     candidates,
     evaluatedAt: Date.now(),
     note:
-      "Rule-based ICT analysis, generated automatically from live chart structure. Educational information only — not financial advice. Past performance does not guarantee future results.",
+      source === "SIMULATED"
+        ? "Simulated data — signals are illustrative only."
+        : "Sequence-verified ICT setups on the last closed candle. The score is a strategy-quality grade, NOT a win probability. Educational information only — not financial advice.",
+    noTradeReasons,
   };
+}
+
+function reasonLabel(rejection: string): string {
+  const map: Record<string, string> = {
+    "htf-bias-unclear": "HTF bias unclear — no directional context",
+    "vol-extreme": "Volatility regime EXTREME — standing aside",
+    "vol-high": "Volatility regime HIGH — filtered",
+    "regime-unclear": "Market regime UNCLEAR — NO TRADE",
+    "off-session": "Outside preferred kill zones",
+    "no-recent-sweep": "No recent liquidity sweep",
+    "weak-sweep": "Sweep lacked rejection quality",
+    "sweep-already-traded": "Liquidity event already traded",
+    "no-structure-confirmation": "No MSS/BOS confirmation after the sweep",
+    "no-displacement": "No displacement leg after the sweep",
+    "weak-displacement": "Displacement quality below threshold",
+    "no-entry-zone": "No fresh FVG/OB created by this sequence",
+    "weak-zone": "Entry zone quality below threshold",
+    "wrong-range-half": "Entry zone not in discount/premium half",
+    "stop-too-tight": "Structural stop too tight vs volatility",
+    "stop-too-wide": "Structural stop too wide vs volatility",
+    "no-structural-target": "No structural liquidity target available",
+    "insufficient-rr": "Best structural target below minimum RR",
+    "below-tier": "Score below tier threshold",
+  };
+  return map[rejection] ?? rejection;
 }

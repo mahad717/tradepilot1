@@ -7,9 +7,12 @@ import { isIntervalKey, isSymbolKey } from "@/lib/market";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
+const BE_MODES = ["off", "tp1", "risk1", "structural"];
+const AMBIGUITY_MODES = ["pessimistic", "optimistic", "randomized", "ltf"];
+const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
+
 /**
  * Persistence features need a database (D1 on Cloudflare, SQLite locally).
- * Resolves to a ready-to-use 503 response when no database is configured.
  */
 async function resolveDb() {
   try {
@@ -20,12 +23,22 @@ async function resolveDb() {
   }
 }
 
-/** GET /api/backtest?symbol=XAUUSD&interval=1h&bars=1500 — run a walk-forward backtest. */
+/**
+ * GET /api/backtest — engine v2.
+ * Params: symbol, interval, bars, minRR, beMode, ambiguity, sessions, seed,
+ *         sensitivity (comma list of minRR variants for stability comparison)
+ */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const symbol = searchParams.get("symbol") ?? "XAUUSD";
-  const interval = searchParams.get("interval") ?? "1h";
+  const interval = searchParams.get("interval") ?? "15min";
   const bars = Number(searchParams.get("bars") ?? 1500);
+  const minRR = Number(searchParams.get("minRR") ?? 2.0);
+  const beMode = searchParams.get("beMode") ?? "tp1";
+  const ambiguity = searchParams.get("ambiguity") ?? "pessimistic";
+  const seed = Number(searchParams.get("seed") ?? 42);
+  const sessionsParam = searchParams.get("sessions") ?? "london,ny-am,ny-pm";
+  const sensitivityParam = searchParams.get("sensitivity") ?? "";
 
   if (!isSymbolKey(symbol)) {
     return NextResponse.json({ error: "Unknown symbol" }, { status: 400 });
@@ -36,10 +49,59 @@ export async function GET(req: Request) {
   if (!Number.isFinite(bars) || bars < 400 || bars > 5000) {
     return NextResponse.json({ error: "bars must be between 400 and 5000" }, { status: 400 });
   }
+  if (!Number.isFinite(minRR) || minRR < 0.5 || minRR > 10) {
+    return NextResponse.json({ error: "minRR must be between 0.5 and 10" }, { status: 400 });
+  }
+  if (!BE_MODES.includes(beMode)) {
+    return NextResponse.json({ error: "Unknown beMode" }, { status: 400 });
+  }
+  if (!AMBIGUITY_MODES.includes(ambiguity)) {
+    return NextResponse.json({ error: "Unknown ambiguity model" }, { status: 400 });
+  }
+  const sessions = sessionsParam
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s !== "any" && SESSION_KEYS.includes(s));
 
   try {
-    const result = await runBacktest({ symbol, interval, bars });
-    return NextResponse.json(result, {
+    const result = await runBacktest({
+      symbol,
+      interval,
+      bars,
+      config: {
+        minRR,
+        beMode: beMode as never,
+        ambiguity: ambiguity as never,
+        randomSeed: Number.isFinite(seed) ? seed : 42,
+        sessions,
+      },
+    });
+
+    // minRR sensitivity across periods (stability view — NOT for cherry-picking)
+    let sensitivity: { minRR: number; trades: number; winRate: number; expectancyR: number; profitFactor: number; netR: number }[] | undefined;
+    const minRRs = sensitivityParam
+      .split(",")
+      .map((x) => Number(x.trim()))
+      .filter((x) => Number.isFinite(x) && x >= 0.5 && x <= 10);
+    if (minRRs.length > 1 && minRRs.length <= 6) {
+      sensitivity = [];
+      for (const rr of minRRs) {
+        const r =
+          rr === minRR
+            ? result
+            : await runBacktest({ symbol, interval, bars, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions } });
+        sensitivity.push({
+          minRR: rr,
+          trades: r.metrics.trades,
+          winRate: r.metrics.winRate,
+          expectancyR: r.metrics.expectancyR,
+          profitFactor: r.metrics.profitFactor,
+          netR: r.metrics.netR,
+        });
+      }
+    }
+
+    return NextResponse.json({ ...result, sensitivity }, {
       headers: { "Cache-Control": "private, max-age=300" },
     });
   } catch (err) {

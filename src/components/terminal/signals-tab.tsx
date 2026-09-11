@@ -22,7 +22,46 @@ export interface SavedSignalRow {
 }
 
 const gradeColor = (g: string) =>
-  g === "A" ? "bg-emerald-500/15 text-emerald-400" : g === "B" ? "bg-amber-500/15 text-amber-400" : "bg-muted text-muted-foreground";
+  g === "A+" || g === "A" ? "bg-emerald-500/15 text-emerald-400" : g === "B" ? "bg-amber-500/15 text-amber-400" : "bg-muted text-muted-foreground";
+
+const CATEGORY_LABELS: Record<string, string> = {
+  context: "Context",
+  liquidity: "Liquidity",
+  structure: "Structure",
+  entry: "Entry",
+  confirmation: "Confirm",
+  risk: "Risk",
+};
+const CATEGORY_MAX: Record<string, number> = {
+  context: 20,
+  liquidity: 20,
+  structure: 20,
+  entry: 20,
+  confirmation: 10,
+  risk: 10,
+};
+
+function CategoryBars({ scores }: { scores: SignalCandidate["scores"] }) {
+  return (
+    <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+      {Object.entries(CATEGORY_LABELS).map(([key, label]) => {
+        const v = scores[key as keyof SignalCandidate["scores"]];
+        const max = CATEGORY_MAX[key];
+        return (
+          <div key={key}>
+            <div className="flex justify-between text-[10px] text-muted-foreground">
+              <span>{label}</span>
+              <span className="font-mono">{v}/{max}</span>
+            </div>
+            <div className="h-1 w-full rounded bg-muted">
+              <div className="h-1 rounded bg-gold" style={{ width: `${(v / max) * 100}%` }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function SignalCard({
   s,
@@ -42,9 +81,13 @@ function SignalCard({
         </Badge>
         <span className="text-sm font-semibold">{s.symbol}</span>
         <span className="text-xs text-muted-foreground">{s.interval}</span>
-        <span className={`ml-auto rounded-full px-2 py-0.5 text-xs font-bold ${gradeColor(s.grade)}`}>
-          {s.grade} · {s.confidence}
+        <span className={`ml-auto rounded-full px-2 py-0.5 text-xs font-bold ${gradeColor(s.tier)}`}>
+          {s.tier} · {s.confidence}/100
         </span>
+      </div>
+
+      <div className="mt-3">
+        <CategoryBars scores={s.scores} />
       </div>
 
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm sm:grid-cols-4">
@@ -63,10 +106,14 @@ function SignalCard({
           </dd>
         </div>
         <div>
-          <dt className="text-xs text-muted-foreground">R:R to TP2</dt>
-          <dd className="font-mono font-semibold">1 : {s.rrToTarget2}</dd>
+          <dt className="text-xs text-muted-foreground">R:R to final target</dt>
+          <dd className="font-mono font-semibold">1 : {s.rrToFinal}</dd>
         </div>
       </dl>
+
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        Sequence: {s.sequence.map((e) => e.kind).join(" → ")}
+      </p>
 
       <ul className="mt-3 space-y-1">
         {s.rationale.map((r, i) => (
@@ -110,6 +157,7 @@ export function SignalsTab({
   loading,
   error,
   note,
+  noTradeReasons,
   savedSignals,
   onRefreshSaved,
 }: {
@@ -117,6 +165,7 @@ export function SignalsTab({
   loading: boolean;
   error: string | null;
   note: string;
+  noTradeReasons: string[];
   savedSignals: SavedSignalRow[];
   onRefreshSaved: () => void;
 }) {
@@ -178,12 +227,22 @@ export function SignalsTab({
 
       {candidates.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center">
-          <p className="text-sm font-semibold">No qualifying setup right now</p>
+          <p className="text-sm font-semibold">NO TRADE — no setup meets the quality bar</p>
           <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-            The engine requires confluence — an HTF bias, a fresh liquidity sweep, an
-            unmitigated FVG or order block entry and a non-premium / non-discount range
-            position. No setup is a valid, rule-based outcome: waiting is part of the strategy.
+            The engine requires the full ordered sequence — HTF bias, discount/premium location,
+            a liquidity sweep with rejection, displacement, MSS/BOS confirmation, a fresh FVG or
+            order block created by that displacement, and a structural target at least 2R away.
+            Waiting is part of the strategy.
           </p>
+          {noTradeReasons.length > 0 && (
+            <ul className="mx-auto mt-3 max-w-md space-y-1 text-left">
+              {noTradeReasons.map((r, i) => (
+                <li key={i} className="flex gap-2 text-xs text-muted-foreground">
+                  <span aria-hidden className="text-gold">▸</span>{r}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
