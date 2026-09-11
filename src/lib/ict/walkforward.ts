@@ -14,9 +14,9 @@ export interface PeriodStats {
   to: number;
   trades: number;
   wins: number;
-  winRate: number;
-  expectancyR: number;
-  profitFactor: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  profitFactor: number | null; // null when no losing trades (spec §13)
   maxDrawdownR: number;
   netR: number;
 }
@@ -47,9 +47,9 @@ export function computePeriodStats(trades: TradeRecord[], period: string, label:
     to,
     trades: trades.length,
     wins: wins.length,
-    winRate: trades.length ? Math.round((wins.length / trades.length) * 1000) / 10 : 0,
-    expectancyR: trades.length ? round(equity / trades.length) : 0,
-    profitFactor: grossLoss > 0 ? round(grossWin / grossLoss) : grossWin > 0 ? 99 : 0,
+    winRate: trades.length ? Math.round((wins.length / trades.length) * 1000) / 10 : null,
+    expectancyR: trades.length ? round(equity / trades.length) : null,
+    profitFactor: grossLoss > 0 ? round(grossWin / grossLoss) : null,
     maxDrawdownR: round(dd),
     netR: round(equity),
   };

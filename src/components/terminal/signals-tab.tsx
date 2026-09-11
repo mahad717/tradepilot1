@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
 import { fmtPrice } from "./format";
-import type { SignalCandidate } from "@/lib/ict/types";
+import type { SignalCandidate, WhyNoTradeState } from "@/lib/ict/types";
 
 export interface SavedSignalRow {
   id: string;
@@ -59,6 +59,45 @@ function CategoryBars({ scores }: { scores: SignalCandidate["scores"] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** Live strategy-state checklist (spec §4) — generated from actual engine state. */
+function WhyNoTradePanel({ state }: { state: WhyNoTradeState }) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">WHY NO TRADE?</h3>
+        <span className="text-xs text-muted-foreground">
+          {state.side ? `next setup would be ${state.side}` : "no tradeable side yet"}
+        </span>
+      </div>
+      <ul className="mt-3 space-y-1.5">
+        {state.conditions.map((c, i) => (
+          <li key={i} className="flex items-start gap-2 text-xs">
+            <span aria-hidden className={c.detected ? "text-emerald-400" : "text-red-400"}>
+              {c.detected ? "✓" : "✗"}
+            </span>
+            <span className={c.detected ? "text-foreground/90" : "text-muted-foreground"}>
+              <span className="font-medium">{c.label}</span> — {c.reason}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {state.waitingFor.length > 0 && (
+        <div className="mt-3 rounded-lg border border-gold/30 bg-gold/5 px-3 py-2">
+          <p className="text-xs font-semibold text-gold">Waiting for:</p>
+          <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-xs text-muted-foreground">
+            {state.waitingFor.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+      <p className="mt-2 text-[10px] text-muted-foreground">
+        Generated from the engine state on the last closed candle — not a hardcoded message.
+      </p>
     </div>
   );
 }
@@ -158,6 +197,7 @@ export function SignalsTab({
   error,
   note,
   noTradeReasons,
+  whyNoTrade,
   savedSignals,
   onRefreshSaved,
 }: {
@@ -166,6 +206,7 @@ export function SignalsTab({
   error: string | null;
   note: string;
   noTradeReasons: string[];
+  whyNoTrade: WhyNoTradeState | null;
   savedSignals: SavedSignalRow[];
   onRefreshSaved: () => void;
 }) {
@@ -226,34 +267,38 @@ export function SignalsTab({
       <p className="text-xs text-muted-foreground">{note}</p>
 
       {candidates.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center">
-          <p className="text-sm font-semibold">NO TRADE — no setup meets the quality bar</p>
-          <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-            The engine requires the full ordered sequence — HTF bias, discount/premium location,
-            a liquidity sweep with rejection, displacement, MSS/BOS confirmation, a fresh FVG or
-            order block created by that displacement, and a structural target at least 2R away.
-            Waiting is part of the strategy.
-          </p>
-          {noTradeReasons.length > 0 && (
-            <ul className="mx-auto mt-3 max-w-md space-y-1 text-left">
-              {noTradeReasons.map((r, i) => (
-                <li key={i} className="flex gap-2 text-xs text-muted-foreground">
-                  <span aria-hidden className="text-gold">▸</span>{r}
-                </li>
-              ))}
-            </ul>
-          )}
+        <div className="space-y-4">
+          <div className="rounded-xl border border-dashed border-border px-6 py-6 text-center">
+            <p className="text-sm font-semibold">NO TRADE — no setup meets the quality bar</p>
+            <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
+              Waiting is part of the strategy. The checklist below is generated from the
+              live strategy state (spec §4) — core requirements vs optional confluence.
+            </p>
+            {noTradeReasons.length > 0 && (
+              <ul className="mx-auto mt-3 max-w-md space-y-1 text-left">
+                {noTradeReasons.map((r, i) => (
+                  <li key={i} className="flex gap-2 text-xs text-muted-foreground">
+                    <span aria-hidden className="text-gold">▸</span>{r}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {whyNoTrade && <WhyNoTradePanel state={whyNoTrade} />}
         </div>
       ) : (
-        <div className="grid gap-3 lg:grid-cols-2">
-          {candidates.map((s) => (
-            <SignalCard
-              key={s.id}
-              s={s}
-              onSave={() => saveSignal(s)}
-              saveState={saveStates[s.id] ?? (user ? "idle" : "anonymous")}
-            />
-          ))}
+        <div className="space-y-4">
+          {whyNoTrade && <WhyNoTradePanel state={whyNoTrade} />}
+          <div className="grid gap-3 lg:grid-cols-2">
+            {candidates.map((s) => (
+              <SignalCard
+                key={s.id}
+                s={s}
+                onSave={() => saveSignal(s)}
+                saveState={saveStates[s.id] ?? (user ? "idle" : "anonymous")}
+              />
+            ))}
+          </div>
         </div>
       )}
 

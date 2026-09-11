@@ -66,6 +66,8 @@ server.log
 /worklog.md
 /scripts/*
 !/scripts/cf-cache-assets.mjs
+!/scripts/*.json
+!/scripts/dst-check.ts
 /agent-ctx/
 /examples/
 /mini-services/

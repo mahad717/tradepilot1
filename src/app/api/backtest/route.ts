@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { runBacktest } from "@/lib/ict/backtest";
+import { runBacktest, compareStrictness, type StrictnessComparisonRow } from "@/lib/ict/backtest";
+import type { Strictness } from "@/lib/ict/sequence";
 import { getAuthUser } from "@/lib/auth";
 import { getDb, DbUnavailableError } from "@/lib/db";
 import { isIntervalKey, isSymbolKey } from "@/lib/market";
@@ -10,6 +11,7 @@ export const maxDuration = 60;
 const BE_MODES = ["off", "tp1", "risk1", "structural"];
 const AMBIGUITY_MODES = ["pessimistic", "optimistic", "randomized", "ltf"];
 const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
+const STRICTNESS_LEVELS = ["conservative", "balanced", "aggressive"];
 
 /**
  * Persistence features need a database (D1 on Cloudflare, SQLite locally).
@@ -24,8 +26,9 @@ async function resolveDb() {
 }
 
 /**
- * GET /api/backtest — engine v2.
- * Params: symbol, interval, bars, minRR, beMode, ambiguity, sessions, seed,
+ * GET /api/backtest — engine v3.
+ * Params: symbol, interval, bars, minRR, beMode, ambiguity, sessions,
+ *         strictness (conservative|balanced|aggressive), compare (0|1),
  *         sensitivity (comma list of minRR variants for stability comparison)
  */
 export async function GET(req: Request) {
@@ -37,7 +40,9 @@ export async function GET(req: Request) {
   const beMode = searchParams.get("beMode") ?? "tp1";
   const ambiguity = searchParams.get("ambiguity") ?? "pessimistic";
   const seed = Number(searchParams.get("seed") ?? 42);
-  const sessionsParam = searchParams.get("sessions") ?? "london,ny-am,ny-pm";
+  const sessionsParam = searchParams.get("sessions") ?? "";
+  const strictnessParam = searchParams.get("strictness") ?? "balanced";
+  const compare = searchParams.get("compare") === "1";
   const sensitivityParam = searchParams.get("sensitivity") ?? "";
 
   if (!isSymbolKey(symbol)) {
@@ -58,6 +63,10 @@ export async function GET(req: Request) {
   if (!AMBIGUITY_MODES.includes(ambiguity)) {
     return NextResponse.json({ error: "Unknown ambiguity model" }, { status: 400 });
   }
+  if (!STRICTNESS_LEVELS.includes(strictnessParam)) {
+    return NextResponse.json({ error: "Unknown strictness preset" }, { status: 400 });
+  }
+  const strictness = strictnessParam as Strictness;
   const sessions = sessionsParam
     .split(",")
     .map((s) => s.trim())
@@ -68,6 +77,7 @@ export async function GET(req: Request) {
       symbol,
       interval,
       bars,
+      strictness,
       config: {
         minRR,
         beMode: beMode as never,
@@ -78,7 +88,7 @@ export async function GET(req: Request) {
     });
 
     // minRR sensitivity across periods (stability view — NOT for cherry-picking)
-    let sensitivity: { minRR: number; trades: number; winRate: number; expectancyR: number; profitFactor: number; netR: number }[] | undefined;
+    let sensitivity: { minRR: number; trades: number; winRate: number | null; expectancyR: number | null; profitFactor: number | null; netR: number }[] | undefined;
     const minRRs = sensitivityParam
       .split(",")
       .map((x) => Number(x.trim()))
@@ -89,7 +99,7 @@ export async function GET(req: Request) {
         const r =
           rr === minRR
             ? result
-            : await runBacktest({ symbol, interval, bars, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions } });
+            : await runBacktest({ symbol, interval, bars, strictness, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions } });
         sensitivity.push({
           minRR: rr,
           trades: r.metrics.trades,
@@ -101,7 +111,18 @@ export async function GET(req: Request) {
       }
     }
 
-    return NextResponse.json({ ...result, sensitivity }, {
+    // Conservative / Balanced / Aggressive comparison (spec §16, §17)
+    let comparison: StrictnessComparisonRow[] | undefined;
+    if (compare) {
+      comparison = await compareStrictness({
+        symbol,
+        interval,
+        bars,
+        config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions },
+      });
+    }
+
+    return NextResponse.json({ ...result, sensitivity, comparison }, {
       headers: { "Cache-Control": "private, max-age=300" },
     });
   } catch (err) {

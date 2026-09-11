@@ -37,14 +37,24 @@ function mkCandles(rows: [number, number, number, number][], startSec = 1000 * 9
 }
 
 function mkSetup(over: Partial<Setup> = {}): Setup {
+  const emptyTrace = (reason = "n/a") =>
+    ({ detected: false, timestamp: null, price: null, range: null, timeframe: "15m", reason } as import("./types").ConfluenceItem);
   return {
     side: "LONG",
     decidedIndex: 5,
     decidedTime: 1000 * 900 + 5 * 900,
+    model: "A_SWEEP_REVERSAL",
     entry: 100,
     initialStop: 98,
     riskPerUnit: 2,
     events: [],
+    confluence: {
+      htfBias: emptyTrace(), dealingRange: emptyTrace(), premiumDiscount: emptyTrace(),
+      liquidityPool: emptyTrace(), liquiditySweep: emptyTrace(), mss: emptyTrace(),
+      displacement: emptyTrace(), fvg: emptyTrace(), orderBlock: emptyTrace(),
+      session: emptyTrace(), smt: emptyTrace(), structuralStop: emptyTrace(),
+      structuralTarget: emptyTrace(), rr: emptyTrace(), score: emptyTrace(),
+    },
     zone: { id: "test-fvg", kind: "FVG", direction: "BULLISH", top: 100, bottom: 99, createdIndex: 3, quality: 0.8, notes: [] },
     targets: [
       { price: 103, source: "test swing", rr: 1.5 },

@@ -106,6 +106,14 @@ export interface TargetLadderInput {
  * Only levels BEYOND entry in the favorable direction are candidates.
  * Levels within 0.25 * clusterAtr of each other are clustered (strongest
  * weight wins) so three nearby swing highs don't fake a 3-target ladder.
+ *
+ * Returns the FULL clustered ladder sorted by distance (nearest first).
+ * Callers MUST NOT slice to the nearest N before applying an RR gate —
+ * the old behaviour kept the 3 nearest levels and then required the
+ * farthest of THOSE to clear minRR, silently discarding far liquidity
+ * (PDH/PWH) and rejecting setups that had a perfectly valid 2R+ target
+ * (spec §18-RR diagnosis). Selection of TP1/TP2/TP3 for execution is the
+ * caller's job via `selectTradeTargets`.
  */
 export function buildTargetLadder(input: TargetLadderInput): StructuralTarget[] {
   const { candles, index, side, entry, pools, rangeHigh, rangeLow, prev, clusterAtr, maxTargets = 3 } = input;
@@ -156,5 +164,42 @@ export function buildTargetLadder(input: TargetLadderInput): StructuralTarget[] 
     clustered.push({ ...t });
   }
 
-  return clustered.slice(0, maxTargets);
+  return clustered;
+}
+
+export interface TradeTargets {
+  /** execution ladder: [nearest, second, FARTHEST] (spec §18-RR fix) */
+  tp1: StructuralTarget | null;
+  tp2: StructuralTarget | null;
+  tp3: StructuralTarget | null;
+  /** RR of the farthest available structural level — the honest max */
+  maxRR: number;
+  /** RR of the nearest level (TP1) */
+  rrToTp1: number;
+  full: StructuralTarget[]; // entire clustered ladder, nearest first
+}
+
+/**
+ * Map the clustered ladder to the execution targets. TP3 is the FARTHEST
+ * level (not the 3rd) so the runner leg reaches real liquidity, and the
+ * minRR gate can honestly test "a structural target ≥ minRR exists".
+ */
+export function selectTradeTargets(
+  ladder: StructuralTarget[],
+  entry: number,
+  riskPerUnit: number
+): TradeTargets {
+  const rr = (t: StructuralTarget | null) =>
+    t ? Math.abs(t.price - entry) / Math.max(1e-9, riskPerUnit) : 0;
+  const tp1 = ladder[0] ?? null;
+  const tp2 = ladder[1] ?? null;
+  const tp3 = ladder.length > 2 ? ladder[ladder.length - 1] : tp2 ?? tp1;
+  return {
+    tp1,
+    tp2,
+    tp3,
+    maxRR: ladder.length ? rr(ladder[ladder.length - 1]) : 0,
+    rrToTp1: tp1 ? rr(tp1) : 0,
+    full: ladder,
+  };
 }

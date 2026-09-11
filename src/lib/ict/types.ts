@@ -226,10 +226,13 @@ export interface Setup {
   side: Side;
   decidedIndex: number;
   decidedTime: number;
+  /** which ICT entry model produced this setup (spec §6) */
+  model: ModelKey;
   entry: number; // limit order (proximal edge of the entry zone)
   initialStop: number;
   riskPerUnit: number; // |entry − initialStop|, price units
   events: SetupEvent[]; // ordered, timestamped chain
+  confluence: ConfluenceTrace; // per-condition traceability (spec §3)
   zone: SetupZoneInfo;
   targets: { price: number; source: string; rr: number }[]; // structural ladder
   rrToFinal: number;
@@ -331,6 +334,8 @@ export interface TradeRecord {
   volRegime: VolatilityRegime;
   mktRegime: MarketRegime;
   smtAligned: boolean;
+  model: ModelKey; // which ICT entry model produced the trade (spec §7)
+  confluence: ConfluenceTrace; // full per-condition trace (spec §3)
   sweepKey: string;
   zoneId: string;
   zoneKind: "FVG" | "OB";
@@ -343,15 +348,18 @@ export interface BacktestMetricsV2 {
   trades: number;
   wins: number;
   losses: number;
-  winRate: number;
+  /** null when 0 trades — displayed as N/A, never 0% */
+  winRate: number | null;
   grossR: number;
   costsR: number;
   netR: number;
-  expectancyR: number; // net
-  expectancyGrossR: number;
+  /** null when 0 trades (spec §14) */
+  expectancyR: number | null; // net of costs
+  expectancyGrossR: number | null; // before costs (spec §14)
   avgWinR: number;
   avgLossR: number;
-  profitFactor: number; // net
+  /** null when the sample has NO losing trades — "99" is banned (spec §13) */
+  profitFactor: number | null; // net
   maxDrawdownR: number;
   bestStreak: number;
   worstStreak: number;
@@ -380,4 +388,199 @@ export interface FunnelCounters {
   ordersFilled: number;
   ordersExpired: number;
   tradesClosed: number;
+}
+
+// ---------------------------------------------------------------------------
+// Spec §1–§7 diagnostics: setup models, traceable confluence, rejection
+// accounting, signal-funnel stages, RR + session filter diagnostics.
+// ---------------------------------------------------------------------------
+
+/** Distinct ICT entry models (spec §6). Each has its own required chain. */
+export type ModelKey =
+  | "A_SWEEP_REVERSAL" //   HTF → sweep → MSS → displacement → FVG retracement
+  | "B_FVG_CONTINUATION" // HTF → displacement → BOS → FVG retracement
+  | "C_OB_REVERSAL" //      HTF → sweep → MSS → displacement → OB retracement
+  | "D_FVG_OB_CONFLUENCE" //sweep → MSS → displacement → FVG+OB overlap
+  | "E_SMT_REVERSAL"; //    SMT → sweep → MSS → displacement → FVG/OB
+
+export const MODEL_LABELS: Record<ModelKey, string> = {
+  A_SWEEP_REVERSAL: "A · Sweep Reversal (FVG)",
+  B_FVG_CONTINUATION: "B · FVG Continuation (BOS)",
+  C_OB_REVERSAL: "C · OB Reversal",
+  D_FVG_OB_CONFLUENCE: "D · FVG + OB Confluence",
+  E_SMT_REVERSAL: "E · SMT Reversal",
+};
+
+/** Rejection categories (spec §2) — PRIMARY reason per rejected opportunity. */
+export type RejectionCode =
+  | "NO_HTF_BIAS"
+  | "WRONG_PREMIUM_DISCOUNT"
+  | "NO_LIQUIDITY"
+  | "NO_LIQUIDITY_SWEEP"
+  | "WEAK_SWEEP"
+  | "NO_MSS"
+  | "WEAK_MSS"
+  | "NO_DISPLACEMENT"
+  | "WEAK_DISPLACEMENT"
+  | "NO_FVG"
+  | "INVALID_FVG"
+  | "NO_ORDER_BLOCK"
+  | "INVALID_ORDER_BLOCK"
+  | "NO_RETRACEMENT"
+  | "OUTSIDE_SESSION"
+  | "SMT_REQUIRED_BUT_MISSING"
+  | "INVALID_STOP"
+  | "INSUFFICIENT_RR"
+  | "DUPLICATE_SETUP"
+  | "COOLDOWN"
+  | "SETUP_EXPIRED"
+  // supplementary codes (not in the spec's minimum list, needed for honesty)
+  | "REGIME_UNCLEAR"
+  | "VOL_BLOCKED"
+  | "NO_STRUCTURAL_TARGET"
+  | "SCORE_BELOW_TIER";
+
+export const REJECTION_LABELS: Record<RejectionCode, string> = {
+  NO_HTF_BIAS: "No HTF bias",
+  WRONG_PREMIUM_DISCOUNT: "Wrong premium/discount half",
+  NO_LIQUIDITY: "No liquidity levels available",
+  NO_LIQUIDITY_SWEEP: "No liquidity sweep",
+  WEAK_SWEEP: "Weak sweep (no rejection / shallow)",
+  NO_MSS: "No MSS/CHOCH",
+  WEAK_MSS: "MSS too old (outside window)",
+  NO_DISPLACEMENT: "No displacement",
+  WEAK_DISPLACEMENT: "Weak displacement",
+  NO_FVG: "No FVG in sequence",
+  INVALID_FVG: "FVG invalid (mitigated / consumed / stale)",
+  NO_ORDER_BLOCK: "No order block in sequence",
+  INVALID_ORDER_BLOCK: "OB invalid (mitigated / consumed / stale)",
+  NO_RETRACEMENT: "No valid retracement (zone already consumed)",
+  OUTSIDE_SESSION: "Outside selected sessions",
+  SMT_REQUIRED_BUT_MISSING: "SMT required but missing",
+  INVALID_STOP: "Invalid structural stop (too tight/wide)",
+  INSUFFICIENT_RR: "Insufficient RR",
+  DUPLICATE_SETUP: "Duplicate setup (event already traded)",
+  COOLDOWN: "Cooldown (too soon after last signal)",
+  SETUP_EXPIRED: "Setup expired (order unfilled)",
+  REGIME_UNCLEAR: "Market regime UNCLEAR",
+  VOL_BLOCKED: "Volatility regime blocked",
+  NO_STRUCTURAL_TARGET: "No structural target available",
+  SCORE_BELOW_TIER: "Score below tier threshold",
+};
+
+/** One traceable confluence condition (spec §3). */
+export interface ConfluenceItem {
+  detected: boolean;
+  /** event timestamp (unix sec) when applicable */
+  timestamp: number | null;
+  /** price or level when applicable */
+  price: number | null;
+  /** human-readable range (e.g. "4400.1–4403.8") when applicable */
+  range: string | null;
+  /** timeframe the condition was measured on */
+  timeframe: string;
+  /** WHY it was true/false — never a bare boolean */
+  reason: string;
+}
+
+export interface ConfluenceTrace {
+  htfBias: ConfluenceItem;
+  dealingRange: ConfluenceItem;
+  premiumDiscount: ConfluenceItem;
+  liquidityPool: ConfluenceItem;
+  liquiditySweep: ConfluenceItem;
+  mss: ConfluenceItem;
+  displacement: ConfluenceItem;
+  fvg: ConfluenceItem;
+  orderBlock: ConfluenceItem;
+  session: ConfluenceItem;
+  smt: ConfluenceItem;
+  structuralStop: ConfluenceItem;
+  structuralTarget: ConfluenceItem;
+  rr: ConfluenceItem;
+  score: ConfluenceItem;
+}
+
+/** Per-model opportunity/rejection accounting (spec §2, §7). */
+export interface ModelStat {
+  model: ModelKey;
+  opportunities: number; // model evaluated on a bar with context OK
+  rejections: Partial<Record<RejectionCode, number>>;
+  validSetups: number; // passed every gate (before cooldown/tier)
+  orders: number;
+  fills: number;
+  trades: number;
+  wins: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  profitFactor: number | null; // null when no losing trades
+  maxDrawdownR: number;
+  netR: number;
+}
+
+/** RR-filter diagnostics (spec §9) — counted BEFORE the minRR gate applies. */
+export interface RrDiagnostics {
+  evaluated: number; // candidates that reached the target stage
+  beforeFilter: number; // with a structural target ladder at all
+  ge1_5: number;
+  ge2: number;
+  ge2_5: number;
+  ge3: number;
+  medianMaxRr: number | null;
+  /** sample of max available RR values (capped length, for the histogram) */
+  sample: number[];
+}
+
+/** Session-filter diagnostics (spec §10) — setups counted with NO session gate. */
+export interface SessionDiagnostics {
+  /** fully-valid setups per session key, counted as if all sessions allowed */
+  bySession: { session: string; label: string; setups: number }[];
+  note: string;
+}
+
+/** Data-quality audit of the fetched history (spec §18). */
+export interface DataQuality {
+  bars: number;
+  duplicates: number;
+  outOfOrder: number;
+  gaps: number;
+  invalidOhlc: number;
+  largestGapBars: number;
+  ok: boolean;
+  note: string;
+}
+
+/** A rejected opportunity snapshot kept for the UI inspector (spec §19). */
+export interface RejectedSetupSample {
+  time: number;
+  index: number;
+  model: ModelKey;
+  side: Side;
+  rejection: RejectionCode;
+  stageReached: string;
+  session: string;
+  entry: number | null;
+  initialStop: number | null;
+  target: number | null;
+  rr: number | null;
+  maxRrAvailable: number | null;
+  score: number | null;
+  trace: ConfluenceTrace | null;
+  /** compact candle window around the decision bar for mini-chart rendering */
+  candles: { t: number; o: number; h: number; l: number; c: number }[];
+  candleStartIndex: number;
+}
+
+/** Strategy-state panel for the live "WHY NO TRADE?" view (spec §4). */
+export interface WhyNoTradeCondition extends ConfluenceItem {
+  label: string;
+  core: boolean; // core requirement (§5) vs optional confluence
+}
+
+export interface WhyNoTradeState {
+  side: "LONG" | "SHORT" | null; // direction the next setup would need
+  conditions: WhyNoTradeCondition[]; // ordered checklist
+  waitingFor: string[]; // ordered list of what must happen next
+  evaluatedAt: number;
+  barTime: number | null;
 }

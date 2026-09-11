@@ -398,6 +398,8 @@ export function simulateTrade(
     volRegime: setup.volRegime,
     mktRegime: setup.mktRegime,
     smtAligned: setup.smtAligned,
+    model: setup.model,
+    confluence: setup.confluence,
     sweepKey: setup.sweepKey,
     zoneId: setup.zone.id,
     zoneKind: setup.zone.kind,

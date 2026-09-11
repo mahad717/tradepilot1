@@ -9,7 +9,7 @@ import { SmtTab } from "./smt-tab";
 import { useAuth } from "./auth-provider";
 import { fmtPrice, fmtPct } from "./format";
 import type { Candle, DataSource, IntervalKey, SymbolKey } from "@/lib/market/types";
-import type { AnalysisSnapshot, Trend } from "@/lib/ict/types";
+import type { AnalysisSnapshot, Trend, WhyNoTradeState } from "@/lib/ict/types";
 
 const SYMBOL_TABS: { key: SymbolKey; label: string }[] = [
   { key: "XAUUSD", label: "XAUUSD" },
@@ -59,6 +59,7 @@ export function Terminal() {
   const [candidates, setCandidates] = useState<import("@/lib/ict/types").SignalCandidate[]>([]);
   const [signalsNote, setSignalsNote] = useState("");
   const [noTradeReasons, setNoTradeReasons] = useState<string[]>([]);
+  const [whyNoTrade, setWhyNoTrade] = useState<WhyNoTradeState | null>(null);
   const [signalsLoading, setSignalsLoading] = useState(false);
   const [signalsError, setSignalsError] = useState<string | null>(null);
   const [savedSignals, setSavedSignals] = useState<SavedSignalRow[]>([]);
@@ -107,6 +108,7 @@ export function Terminal() {
       setCandidates(json.candidates ?? []);
       setSignalsNote(json.note ?? "");
       setNoTradeReasons(json.noTradeReasons ?? []);
+      setWhyNoTrade(json.whyNoTrade ?? null);
     } catch (e) {
       setSignalsError(e instanceof Error ? e.message : "Signals unavailable");
     } finally {
@@ -257,6 +259,7 @@ export function Terminal() {
             error={signalsError}
             note={signalsNote}
             noTradeReasons={noTradeReasons}
+            whyNoTrade={whyNoTrade}
             savedSignals={savedSignals}
             onRefreshSaved={loadSaved}
           />

@@ -6,6 +6,9 @@ import type {
   FunnelCounters,
   TradeRecord,
 } from "./types";
+import { REJECTION_LABELS, MODEL_LABELS } from "./types";
+import type { ModelKey, RejectionCode, RrDiagnostics, SessionDiagnostics } from "./types";
+import type { DiagSink } from "./sequence";
 import { SESSION_LABELS } from "./sessions";
 import type { PeriodStats } from "./walkforward";
 
@@ -40,15 +43,17 @@ export function computeMetrics(trades: TradeRecord[]): BacktestMetricsV2 {
     trades: trades.length,
     wins: wins.length,
     losses: losses.length,
-    winRate: trades.length ? Math.round((wins.length / trades.length) * 1000) / 10 : 0,
+    // N/A semantics (spec §13): null when there is nothing meaningful to show
+    winRate: trades.length ? Math.round((wins.length / trades.length) * 1000) / 10 : null,
     grossR: round(totalGross),
     costsR: round(totalCosts),
     netR: round(net),
-    expectancyR: trades.length ? round(net / trades.length) : 0,
-    expectancyGrossR: trades.length ? round(totalGross / trades.length) : 0,
+    expectancyR: trades.length ? round(net / trades.length) : null,
+    expectancyGrossR: trades.length ? round(totalGross / trades.length) : null,
     avgWinR: wins.length ? round(grossWin / wins.length) : 0,
     avgLossR: losses.length ? round(-grossLoss / losses.length) : 0,
-    profitFactor: grossLoss > 0 ? round(grossWin / grossLoss) : grossWin > 0 ? 99 : 0,
+    // NEVER report "PF 99" for a sample with no losers (spec §13)
+    profitFactor: grossLoss > 0 ? round(grossWin / grossLoss) : null,
     maxDrawdownR: round(maxDd),
     bestStreak: best,
     worstStreak: Math.abs(worst),
@@ -127,32 +132,160 @@ export function lossReasonTable(trades: TradeRecord[]): LossReasonRow[] {
 }
 
 // ---------------------------------------------------------------------------
-// Signal funnel (spec #24)
+// Signal funnel (spec §1) — market-state stages per BAR + opportunity stages
+// per CANDIDATE (bar × model). Percentages are of total candles, exactly like
+// the spec's example ("Liquidity sweeps 184 3.7%").
 // ---------------------------------------------------------------------------
 
 export interface FunnelRow {
   stage: string;
   count: number;
+  /** percentage of total candles (spec §1) */
+  pct: number;
+  unit: "bars" | "candidates" | "orders";
 }
 
-export function funnelRows(f: FunnelCounters): FunnelRow[] {
+export function funnelStages(ctx: {
+  totalCandles: number;
+  diag: import("./sequence").DiagSink;
+  funnel: FunnelCounters;
+}): FunnelRow[] {
+  const { totalCandles, diag, funnel } = ctx;
+  const pct = (n: number) => (totalCandles > 0 ? Math.round((n / totalCandles) * 10000) / 100 : 0);
   return [
-    { stage: "Bars evaluated (flat, warmed up)", count: f.barsEvaluated },
-    { stage: "HTF bias aligned", count: f.htfBiasOk },
-    { stage: "Regime + session OK", count: Math.min(f.regimeOk, f.sessionOk) },
-    { stage: "Liquidity sweep found (recent)", count: f.sweepFound },
-    { stage: "Sweep rejection quality OK", count: f.sweepQualityOk },
-    { stage: "Structure confirmation (MSS/BOS)", count: f.structureOk },
-    { stage: "Displacement quality OK", count: f.displacementOk },
-    { stage: "Entry zone found (fresh, sequenced)", count: f.zoneFound },
-    { stage: "Zone quality OK", count: f.zoneQualityOk },
-    { stage: "Premium/discount OK", count: f.premiumDiscountOk },
-    { stage: "Structural target ≥ minRR", count: f.rrOk },
-    { stage: "Score ≥ tier threshold", count: f.scoreOk },
-    { stage: "Orders placed", count: f.ordersPlaced },
-    { stage: "Orders filled", count: f.ordersFilled },
-    { stage: "Trades closed", count: f.tradesClosed },
+    { stage: "Total candles", count: totalCandles, pct: 100, unit: "bars" },
+    { stage: "HTF bias available", count: diag.biasBars, pct: pct(diag.biasBars), unit: "bars" },
+    { stage: "Valid HTF context (bias + regime OK)", count: diag.contextBars, pct: pct(diag.contextBars), unit: "bars" },
+    { stage: "Dealing range identified", count: diag.rangeBars, pct: pct(diag.rangeBars), unit: "bars" },
+    { stage: "Liquidity pool within reach", count: diag.poolBars, pct: pct(diag.poolBars), unit: "bars" },
+    { stage: "Liquidity sweep detected", count: diag.sweepBars, pct: pct(diag.sweepBars), unit: "bars" },
+    { stage: "MSS/CHOCH detected", count: diag.structureBars, pct: pct(diag.structureBars), unit: "bars" },
+    { stage: "Kill Zone condition", count: diag.kzBars, pct: pct(diag.kzBars), unit: "bars" },
+    { stage: "Setup candidates evaluated", count: diag.candidates, pct: pct(diag.candidates), unit: "candidates" },
+    { stage: "Sweep w/ rejection quality OK", count: diag.sweepsQuality, pct: pct(diag.sweepsQuality), unit: "candidates" },
+    { stage: "Displacement confirmed", count: diag.displacements, pct: pct(diag.displacements), unit: "candidates" },
+    { stage: "FVG detected", count: diag.fvgSeen, pct: pct(diag.fvgSeen), unit: "candidates" },
+    { stage: "Order Block detected", count: diag.obSeen, pct: pct(diag.obSeen), unit: "candidates" },
+    { stage: "Premium/discount condition", count: diag.pdOk, pct: pct(diag.pdOk), unit: "candidates" },
+    { stage: "Valid retracement (zone + stop)", count: diag.stopValid, pct: pct(diag.stopValid), unit: "candidates" },
+    { stage: "Structural target valid", count: diag.targetsValid, pct: pct(diag.targetsValid), unit: "candidates" },
+    { stage: "SMT confirmation", count: diag.smtOk, pct: pct(diag.smtOk), unit: "candidates" },
+    { stage: "Minimum RR satisfied", count: diag.rrOk, pct: pct(diag.rrOk), unit: "candidates" },
+    { stage: "Final signals (orders placed)", count: funnel.ordersPlaced, pct: pct(funnel.ordersPlaced), unit: "orders" },
+    { stage: "Orders filled", count: funnel.ordersFilled, pct: pct(funnel.ordersFilled), unit: "orders" },
+    { stage: "Orders expired unfilled", count: funnel.ordersExpired, pct: pct(funnel.ordersExpired), unit: "orders" },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Rejection-reason table (spec §2) + model comparison (spec §7) + RR/session
+// diagnostics (spec §9, §10) + sample-size categories (spec §12).
+// ---------------------------------------------------------------------------
+
+export interface RejectionRow {
+  code: RejectionCode;
+  label: string;
+  count: number;
+}
+
+/** Ranked rejection table from the PRIMARY (deepest) rejection per bar. */
+export function rejectionTable(diag: DiagSink): RejectionRow[] {
+  return [...diag.primary.entries()]
+    .map(([code, count]) => ({ code, label: REJECTION_LABELS[code] ?? code, count }))
+    .sort((a, b) => b.count - a.count);
+}
+
+export interface ModelPerformanceRow {
+  model: ModelKey;
+  label: string;
+  opportunities: number;
+  topRejections: { code: RejectionCode; label: string; count: number }[];
+  validSetups: number;
+  trades: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  profitFactor: number | null;
+  maxDrawdownR: number;
+  netR: number;
+}
+
+export function modelPerformance(diag: DiagSink, trades: TradeRecord[]): ModelPerformanceRow[] {
+  const rows: ModelPerformanceRow[] = [];
+  for (const [model, stat] of diag.byModel.entries()) {
+    const ts = trades.filter((t) => t.model === model);
+    const m = computeMetrics(ts);
+    rows.push({
+      model,
+      label: MODEL_LABELS[model] ?? model,
+      opportunities: stat.opportunities,
+      topRejections: [...stat.rejections.entries()]
+        .map(([code, count]) => ({ code, label: REJECTION_LABELS[code] ?? code, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3),
+      validSetups: stat.valid,
+      trades: m.trades,
+      winRate: m.winRate,
+      expectancyR: m.expectancyR,
+      profitFactor: m.profitFactor,
+      maxDrawdownR: m.maxDrawdownR,
+      netR: m.netR,
+    });
+  }
+  return rows.sort((a, b) => b.opportunities - a.opportunities);
+}
+
+/** RR-filter histogram counted BEFORE the gate applies (spec §9). */
+export function rrDiagnostics(rr: DiagSink["rrDiag"]): RrDiagnostics {
+  const sorted = [...rr.values].sort((a, b) => a - b);
+  return {
+    evaluated: rr.evaluated,
+    beforeFilter: rr.withTargets,
+    ge1_5: rr.ge15,
+    ge2: rr.ge20,
+    ge2_5: rr.ge25,
+    ge3: rr.ge30,
+    medianMaxRr: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
+    sample: rr.values.slice(-400),
+  };
+}
+
+/** Session breakdown of fully-valid setups, counted with NO session gate (spec §10). */
+export function sessionDiagnostics(diag: DiagSink): SessionDiagnostics {
+  const order = ["london", "ny-am", "ny-pm", "london-close", "asia", "off-session"];
+  const rows = [...diag.setupsBySession.entries()]
+    .map(([session, setups]) => ({
+      session,
+      label: SESSION_LABELS[session as keyof typeof SESSION_LABELS] ?? session,
+      setups,
+    }))
+    .sort((a, b) => {
+      const ia = order.indexOf(a.session);
+      const ib = order.indexOf(b.session);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || b.setups - a.setups;
+    });
+  return {
+    bySession: rows,
+    note:
+      "Setups counted with every session allowed (before cooldowns). Use this to judge whether a session filter is unnecessarily restrictive — not to auto-pick the best session.",
+  };
+}
+
+export type SampleCategory = "INSUFFICIENT" | "LOW" | "MODERATE" | "STRONGER" | "EMPTY";
+
+export const SAMPLE_CATEGORIES: Record<SampleCategory, { label: string; note: string }> = {
+  EMPTY: { label: "NO TRADES", note: "No trades in this sample. Expectancy, win rate and profit factor are undefined — the only honest reading is that the strategy found nothing to trade." },
+  INSUFFICIENT: { label: "INSUFFICIENT SAMPLE", note: "Fewer than 20 trades. Performance cannot be meaningfully evaluated — treat every number as noise." },
+  LOW: { label: "LOW CONFIDENCE", note: "20–49 trades. Directional evidence only." },
+  MODERATE: { label: "MODERATE SAMPLE", note: "50–99 trades. Suggestive, not conclusive." },
+  STRONGER: { label: "STRONGER SAMPLE", note: "100+ trades. Still informational — never a guarantee of validity." },
+};
+
+export function sampleCategory(trades: number): SampleCategory {
+  if (trades <= 0) return "EMPTY";
+  if (trades < 20) return "INSUFFICIENT";
+  if (trades < 50) return "LOW";
+  if (trades < 100) return "MODERATE";
+  return "STRONGER";
 }
 
 // ---------------------------------------------------------------------------
@@ -234,8 +367,8 @@ export function managementRates(trades: TradeRecord[]): ManagementRates {
 export interface SessionStat {
   session: string;
   trades: number;
-  winRate: number;
-  expectancyR: number;
+  winRate: number | null;
+  expectancyR: number | null;
   netR: number;
 }
 
@@ -261,8 +394,8 @@ export function sessionStats(trades: TradeRecord[]): SessionStat[] {
 export interface ScoreBucketStat {
   bucket: string;
   trades: number;
-  winRate: number;
-  expectancyR: number;
+  winRate: number | null;
+  expectancyR: number | null;
   netR: number;
 }
 
@@ -299,10 +432,30 @@ export function robustnessFlags(
     ? Math.max(...periods.map((p) => Math.max(0, p.netR))) / totalPositive
     : 1;
 
-  if (metrics.trades < 30) reasons.push(`Only ${metrics.trades} trades — sample too small for statistical confidence`);
-  if (metrics.expectancyR > 0.05 && metrics.profitFactor > 1.1) reasons.push("Positive expectancy and profit factor above 1.1");
-  if (metrics.expectancyR <= 0) reasons.push("Non-positive net expectancy");
-  if (metrics.profitFactor < 0.95) reasons.push("Profit factor below 0.95");
+  const exp = metrics.expectancyR; // nullable (spec §13)
+  const pf = metrics.profitFactor; // null when no losers — never read as "99"
+
+  // Sample-size gate FIRST (spec §12): tiny samples are RED, no matter how
+  // good the numbers look. "1 trade, PF 99, positive expectancy" is NOT
+  // meaningful evidence and must never be presented as such.
+  const cat = sampleCategory(metrics.trades);
+  if (cat === "EMPTY") {
+    reasons.push("No trades — there is nothing to evaluate in this sample.");
+    return { level: "RED", reasons };
+  }
+  if (cat === "INSUFFICIENT") {
+    reasons.push(`Only ${metrics.trades} trade${metrics.trades === 1 ? "" : "s"}. Performance cannot be meaningfully evaluated.`);
+    if (metrics.trades === 1) reasons.push("A single trade says nothing about the strategy — this is not evidence of an edge.");
+    return { level: "RED", reasons };
+  }
+  if (cat === "LOW") reasons.push(`${metrics.trades} trades — LOW confidence sample (20–49).`);
+  if (cat === "MODERATE") reasons.push(`${metrics.trades} trades — MODERATE sample (50–99).`);
+  if (cat === "STRONGER") reasons.push(`${metrics.trades} trades — STRONGER sample (100+), still informational only.`);
+
+  if (exp !== null && pf !== null && exp > 0.05 && pf > 1.1) reasons.push("Positive expectancy and profit factor above 1.1");
+  if (exp !== null && exp <= 0) reasons.push("Non-positive net expectancy");
+  if (pf !== null && pf < 0.95) reasons.push("Profit factor below 0.95");
+  if (pf === null && metrics.trades > 0) reasons.push("No losing trades in sample — profit factor is N/A, not 99");
   if (metrics.maxDrawdownR > 8) reasons.push(`Drawdown ${metrics.maxDrawdownR}R is large relative to typical expectations`);
   if (periods.length >= 3) {
     if (positivePeriods / periods.length >= 0.6) reasons.push(`${positivePeriods}/${periods.length} periods positive`);
@@ -310,8 +463,8 @@ export function robustnessFlags(
     if (bestPeriodShare > 0.8) reasons.push("Most of the net gain depends on a single period");
   }
 
-  const red = metrics.expectancyR < -0.05 || metrics.profitFactor < 0.9 || (periods.length >= 3 && bestPeriodShare > 0.8 && metrics.expectancyR <= 0.05);
-  const green = metrics.expectancyR > 0.05 && metrics.profitFactor > 1.1 && metrics.trades >= 30 && metrics.maxDrawdownR <= 8 && periods.length >= 3 && positivePeriods / periods.length >= 0.6 && bestPeriodShare <= 0.6;
+  const red = (exp !== null && exp < -0.05) || (pf !== null && pf < 0.9) || (periods.length >= 3 && bestPeriodShare > 0.8 && exp !== null && exp <= 0.05);
+  const green = exp !== null && pf !== null && exp > 0.05 && pf > 1.1 && metrics.trades >= 30 && metrics.maxDrawdownR <= 8 && periods.length >= 3 && positivePeriods / periods.length >= 0.6 && bestPeriodShare <= 0.6;
   return { level: red ? "RED" : green ? "GREEN" : "YELLOW", reasons };
 }
 
@@ -339,7 +492,7 @@ export function buildReport(trades: TradeRecord[], metrics: BacktestMetricsV2): 
   const sorted = [...trades].sort((a, b) => b.netR - a.netR);
   const sessions = sessionStats(trades).filter((s) => s.trades >= 3);
   const buckets = scoreBucketStats(trades).filter((b) => b.trades >= 3);
-  const byExpectancy = (a: { expectancyR: number }, b: { expectancyR: number }) => b.expectancyR - a.expectancyR;
+  const byExpectancy = (a: { expectancyR: number | null }, b: { expectancyR: number | null }) => (b.expectancyR ?? -99) - (a.expectancyR ?? -99);
   let consec = 0;
   let worst = 0;
   for (const t of trades) {

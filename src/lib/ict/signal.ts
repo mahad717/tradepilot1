@@ -1,17 +1,21 @@
-// Rule-based signal generation v2 — built on the SAME sequence-verified
-// setup builder as the backtester (spec #6, #36 "backtest vs replay
-// consistency"). A signal exists only when the full ordered chain holds on
-// the last CLOSED bar:
-//   HTF bias → discount/premium → sweep+rejection → displacement → MSS/BOS
-//   → fresh FVG/OB → retracement entry
-// otherwise the result is an explicit NO TRADE (spec #31).
+// Rule-based signal generation v3 — built on the SAME model-aware setup
+// builder as the backtester (spec §6, "backtest vs replay consistency").
+// A signal exists only when a full model chain holds on the last CLOSED bar;
+// otherwise the result is an explicit NO TRADE with a live "WHY NO TRADE?"
+// checklist generated from the actual strategy state (spec §4).
 import "server-only";
 import { getCandles } from "@/lib/market";
 import type { IntervalKey, SymbolKey } from "@/lib/market/types";
-import { buildSeriesContext, buildSetupAt, DEFAULT_CONFIG, type CooldownState } from "./sequence";
+import {
+  buildSeriesContext,
+  buildSetupAt,
+  probeSetupState,
+  DEFAULT_CONFIG,
+  type CooldownState,
+} from "./sequence";
 import { smtSeries } from "./smtseries";
 import { SESSION_LABELS } from "./sessions";
-import type { SignalCandidate, Tier } from "./types";
+import { REJECTION_LABELS, type SignalCandidate, type Tier, type WhyNoTradeState } from "./types";
 
 interface BuildArgs {
   symbol: SymbolKey;
@@ -27,7 +31,7 @@ function tierToGrade(tier: Tier): "A" | "B" | "C" {
 export async function generateSignals({
   symbol,
   interval,
-}: BuildArgs): Promise<{ candidates: SignalCandidate[]; evaluatedAt: number; note: string; noTradeReasons: string[] }> {
+}: BuildArgs): Promise<{ candidates: SignalCandidate[]; evaluatedAt: number; note: string; noTradeReasons: string[]; whyNoTrade: WhyNoTradeState | null }> {
   const [{ candles, source }, silver] = await Promise.all([
     getCandles(symbol, interval, 400),
     getCandles("XAGUSD", interval, 400).catch(() => null),
@@ -51,6 +55,25 @@ export async function generateSignals({
   };
 
   const { setup, rejection } = buildSetupAt(ctx, barIndex, DEFAULT_CONFIG, cooldown);
+  // live WHY NO TRADE checklist from the actual strategy state (spec §4)
+  const probe = probeSetupState(ctx, barIndex, DEFAULT_CONFIG);
+  const whyNoTrade: WhyNoTradeState = {
+    side: probe.side,
+    conditions: probe.conditions.map((c) => ({
+      label: c.label,
+      core: c.core,
+      detected: c.detected,
+      timestamp: c.timestamp,
+      price: c.price,
+      range: null,
+      timeframe: c.key === "htfBias" ? "4H/1H" : interval,
+      reason: c.reason,
+    })),
+    waitingFor: probe.waitingFor,
+    evaluatedAt: Date.now(),
+    barTime: probe.barTime,
+  };
+
   const candidates: SignalCandidate[] = [];
 
   if (setup && setup.tier !== "NO_TRADE") {
@@ -82,7 +105,7 @@ export async function generateSignals({
 
   const noTradeReasons: string[] = [];
   if (!setup) {
-    if (rejection) noTradeReasons.push(reasonLabel(rejection));
+    if (rejection) noTradeReasons.push(REJECTION_LABELS[rejection] ?? rejection);
   } else if (setup.tier === "NO_TRADE") {
     noTradeReasons.push(`Sequence matched but scored ${setup.totalScore}/100 — below the tier-B (70) threshold`, ...setup.rejections);
   }
@@ -93,32 +116,8 @@ export async function generateSignals({
     note:
       source === "SIMULATED"
         ? "Simulated data — signals are illustrative only."
-        : "Sequence-verified ICT setups on the last closed candle. The score is a strategy-quality grade, NOT a win probability. Educational information only — not financial advice.",
+        : "Model-verified ICT setups on the last closed candle. The score is a strategy-quality grade, NOT a win probability. Educational information only — not financial advice.",
     noTradeReasons,
+    whyNoTrade,
   };
-}
-
-function reasonLabel(rejection: string): string {
-  const map: Record<string, string> = {
-    "htf-bias-unclear": "HTF bias unclear — no directional context",
-    "vol-extreme": "Volatility regime EXTREME — standing aside",
-    "vol-high": "Volatility regime HIGH — filtered",
-    "regime-unclear": "Market regime UNCLEAR — NO TRADE",
-    "off-session": "Outside preferred kill zones",
-    "no-recent-sweep": "No recent liquidity sweep",
-    "weak-sweep": "Sweep lacked rejection quality",
-    "sweep-already-traded": "Liquidity event already traded",
-    "no-structure-confirmation": "No MSS/BOS confirmation after the sweep",
-    "no-displacement": "No displacement leg after the sweep",
-    "weak-displacement": "Displacement quality below threshold",
-    "no-entry-zone": "No fresh FVG/OB created by this sequence",
-    "weak-zone": "Entry zone quality below threshold",
-    "wrong-range-half": "Entry zone not in discount/premium half",
-    "stop-too-tight": "Structural stop too tight vs volatility",
-    "stop-too-wide": "Structural stop too wide vs volatility",
-    "no-structural-target": "No structural liquidity target available",
-    "insufficient-rr": "Best structural target below minimum RR",
-    "below-tier": "Score below tier threshold",
-  };
-  return map[rejection] ?? rejection;
 }

@@ -1,25 +1,44 @@
-// Sequence-verified ICT setup builder (spec #6, #7) — the core of engine v2.
+// Model-aware ICT setup builder (spec §5, §6) — the core of engine v3.
 //
-// A trade REQUIRES the full ordered chain, each step caused by the previous:
-//   HTF bias → discount/premium location → liquidity sweep (with rejection)
-//   → displacement → MSS/BOS confirmation → fresh FVG/OB created by that
-//   displacement → retracement into the zone → entry.
-// Every event is timestamped and must satisfy its recency window; old
-// concepts cannot qualify a new trade indefinitely.
+// INSTEAD of one giant mandatory rule chain, this builder implements the
+// spec's confluence hierarchy:
 //
-// The module is PURE (no I/O, no server-only) so live signals, backtests and
-// the validation suite execute byte-identical logic.
+//   CORE (required by every model):
+//     HTF context + liquidity event* + MSS/CHOCH (structure break) +
+//     displacement + entry zone + structural SL + valid target
+//     (*Model B — FVG continuation — trades WITH the trend off a BOS and
+//      needs no sweep; "liquidity event" is satisfied by the BOS leg.)
+//
+//   OPTIONAL (score confluence only, never hard gates by default):
+//     SMT, kill zone, FVG+OB overlap, premium/discount, session liquidity
+//
+// SETUP MODELS (spec §6):
+//   A — Liquidity Sweep Reversal : HTF → sweep → MSS → displacement → FVG
+//   B — FVG Continuation         : HTF → displacement → BOS → FVG retrace
+//   C — Order Block Reversal     : HTF → sweep → MSS → displacement → OB
+//   D — FVG + OB Confluence      : sweep → MSS → displacement → overlap
+//   E — SMT Reversal             : SMT → sweep → MSS → displacement → FVG/OB
+//
+// Every rejected opportunity records its PRIMARY RejectionCode (spec §2) and
+// every candidate carries a full ConfluenceTrace (spec §3). The module is
+// PURE (no I/O) so live signals, backtests and the validation suite execute
+// identical logic.
 import type {
   AmbiguityModel,
   AuditLine,
   BreakevenMode,
   Candle,
   CategoryScores,
+  ConfluenceItem,
+  ConfluenceTrace,
   CostModel,
   FunnelCounters,
   LiquidityPool,
   LiquiditySweep,
   MarketRegime,
+  ModelKey,
+  RejectedSetupSample,
+  RejectionCode,
   Setup,
   SetupEvent,
   SetupZoneInfo,
@@ -41,8 +60,8 @@ import { htfBiasSeries, htfSecondsFor } from "./htf";
 import { assessDisplacement, findDisplacementCandle } from "./displacement";
 import { classifySweep, type SweepAssessment } from "./sweepquality";
 import { fvgQuality, obQuality } from "./zonequality";
-import { buildTargetLadder, prevExtremes, type StructuralTarget } from "./targets";
-import { sessionKeyAt } from "./sessions";
+import { buildTargetLadder, prevExtremes, selectTradeTargets, type StructuralTarget } from "./targets";
+import { sessionKeyAt, SESSION_LABELS } from "./sessions";
 import type { IntervalKey, SymbolKey } from "@/lib/market/types";
 import { intervalSeconds } from "@/lib/market/types";
 
@@ -50,20 +69,32 @@ import { intervalSeconds } from "@/lib/market/types";
 // Configuration
 // ---------------------------------------------------------------------------
 
+export type Strictness = "conservative" | "balanced" | "aggressive";
+
 export interface EngineConfig {
   // sequence / recency (spec #6, #7)
   maxSweepAgeBars: number; // anchor sweep must be at most this old
-  maxStructureAgeBars: number; // MSS/BOS must occur within this many bars after the sweep
+  maxStructureAgeBars: number; // MSS/BOS must occur within this many bars
   orderExpiryBars: number; // pending limit order lifetime
   // quality gates (spec #8–#12)
   sweepQualityMin: number; // 0..1
+  /** balanced/aggressive: also accept SWEEP_NO_CONFIRM at this quality (§16) */
+  allowUnconfirmedSweep: boolean;
   displacementQualityMin: number; // 0..1
   zoneQualityMin: number; // 0..1
   requireHtfBias: boolean; // LONG needs HTF bullish, SHORT bearish
-  requireDiscountPremium: boolean; // entry zone in the correct range half
+  /** OPTIONAL confluence (spec §5) — score bonus, not a gate, by default */
+  requireDiscountPremium: boolean;
+  /** Kill zone as a hard gate — default OFF (§5); sessions filter below still applies */
+  requireKillzone: boolean;
+  /** Aggressive (§16): Model A/C/D skipped when no sweep — Model B carries trends */
+  requireSweep: boolean;
+
+  // models (spec §6)
+  models: ModelKey[];
 
   // risk (spec #4, #5)
-  minRR: number; // structural target must be at least this far
+  minRR: number; // at least one structural target must be this far
   minStopAtrMult: number;
   maxStopAtrMult: number;
   maxStopPctOfPrice: number;
@@ -73,7 +104,7 @@ export interface EngineConfig {
   tierA: number;
   tierB: number; // below → NO_TRADE
 
-  // sessions (spec #13) — session keys allowed to trade; [] = any
+  // sessions (spec §10) — session keys allowed to trade; [] = any
   sessions: string[];
 
   // regimes (spec #15, #16)
@@ -103,16 +134,30 @@ export interface EngineConfig {
   smtWindowBars: number; // SMT must be this recent to count (spec #14)
 }
 
+/** Strictness presets (spec §16). Compared objectively — never auto-picked. */
+export const STRICTNESS_PRESETS: Record<Strictness, string> = {
+  conservative: "HTF + sweep (strict rejection) + MSS + displacement + FVG/OB + P/D + RR≥2R",
+  balanced: "HTF + sweep-or-liquidity-event + MSS + displacement + FVG/OB + RR (P/D, KZ optional)",
+  aggressive: "HTF + MSS + displacement + FVG/OB (sweep optional via Model B, loosest quality floors)",
+};
+
+const MODEL_ORDER: ModelKey[] = ["A_SWEEP_REVERSAL", "B_FVG_CONTINUATION", "C_OB_REVERSAL", "D_FVG_OB_CONFLUENCE", "E_SMT_REVERSAL"];
+
 export const DEFAULT_CONFIG: EngineConfig = {
   maxSweepAgeBars: 8,
-  maxStructureAgeBars: 12,
+  maxStructureAgeBars: 14,
   orderExpiryBars: 12,
 
-  sweepQualityMin: 0.45,
-  displacementQualityMin: 0.55,
-  zoneQualityMin: 0.45,
+  sweepQualityMin: 0.35,
+  allowUnconfirmedSweep: true,
+  displacementQualityMin: 0.45,
+  zoneQualityMin: 0.4,
   requireHtfBias: true,
-  requireDiscountPremium: true,
+  requireDiscountPremium: false, // OPTIONAL confluence (spec §5)
+  requireKillzone: false, // OPTIONAL confluence (spec §5)
+  requireSweep: false, // Model B trades without a sweep (spec §6)
+
+  models: ["A_SWEEP_REVERSAL", "B_FVG_CONTINUATION", "C_OB_REVERSAL", "D_FVG_OB_CONFLUENCE"],
 
   minRR: 2.0,
   minStopAtrMult: 0.15,
@@ -123,7 +168,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
   tierA: 80,
   tierB: 70,
 
-  sessions: ["london", "ny-am", "ny-pm"],
+  sessions: [], // all sessions; kill zone is a score confluence (§5)
 
   blockedVolRegimes: ["EXTREME"],
   rangeRegimeMinScore: 80,
@@ -147,12 +192,146 @@ export const DEFAULT_CONFIG: EngineConfig = {
   smtWindowBars: 20,
 };
 
+export const CONSERVATIVE_CONFIG: Partial<EngineConfig> = {
+  sweepQualityMin: 0.45,
+  allowUnconfirmedSweep: false,
+  displacementQualityMin: 0.55,
+  zoneQualityMin: 0.45,
+  requireDiscountPremium: true,
+  models: ["A_SWEEP_REVERSAL", "C_OB_REVERSAL", "D_FVG_OB_CONFLUENCE"],
+  maxStructureAgeBars: 12,
+};
+
+export const BALANCED_CONFIG: Partial<EngineConfig> = { ...DEFAULT_CONFIG };
+
+export const AGGRESSIVE_CONFIG: Partial<EngineConfig> = {
+  sweepQualityMin: 0.3,
+  allowUnconfirmedSweep: true,
+  displacementQualityMin: 0.4,
+  zoneQualityMin: 0.35,
+  requireDiscountPremium: false,
+  maxStructureAgeBars: 16,
+};
+
+export function presetFor(strictness: Strictness): Partial<EngineConfig> {
+  if (strictness === "conservative") return CONSERVATIVE_CONFIG;
+  if (strictness === "aggressive") return AGGRESSIVE_CONFIG;
+  return BALANCED_CONFIG;
+}
+
 export function tierFor(score: number, cfg: EngineConfig): Tier {
   if (score >= cfg.tierAPlus) return "A+";
   if (score >= cfg.tierA) return "A";
   if (score >= cfg.tierB) return "B";
   return "NO_TRADE";
 }
+
+// ---------------------------------------------------------------------------
+// Diagnostics sink (spec §1, §2, §9, §10, §19)
+// ---------------------------------------------------------------------------
+
+export interface RrDiagAccum {
+  evaluated: number;
+  withTargets: number;
+  ge15: number;
+  ge20: number;
+  ge25: number;
+  ge30: number;
+  values: number[]; // capped sample of max available RR
+}
+
+export interface DiagSink {
+  // market-state funnel (per bar)
+  bars: number;
+  biasBars: number;
+  contextBars: number;
+  rangeBars: number;
+  poolBars: number;
+  kzBars: number;
+  sweepBars: number;
+  structureBars: number;
+  // opportunity funnel (per model evaluation)
+  candidates: number;
+  sweepsFound: number;
+  sweepsQuality: number;
+  structuresFound: number;
+  displacements: number;
+  fvgSeen: number;
+  obSeen: number;
+  zonesValid: number;
+  pdOk: number;
+  stopValid: number;
+  targetsValid: number;
+  rrOk: number;
+  smtOk: number;
+  kzOk: number;
+  validSetups: number;
+  // rejection accounting
+  rejections: Map<RejectionCode, number>;
+  primary: Map<RejectionCode, number>;
+  byModel: Map<ModelKey, { opportunities: number; valid: number; rejections: Map<RejectionCode, number> }>;
+  setupsBySession: Map<string, number>;
+  rrDiag: RrDiagAccum;
+  // rejected-opportunity samples (spec §19)
+  samples: RejectedSetupSample[];
+  sampleCounter: number;
+}
+
+function newDiagSink(): DiagSink {
+  return {
+    bars: 0, biasBars: 0, contextBars: 0, rangeBars: 0, poolBars: 0, kzBars: 0,
+    sweepBars: 0, structureBars: 0,
+    candidates: 0, sweepsFound: 0, sweepsQuality: 0, structuresFound: 0,
+    displacements: 0, fvgSeen: 0, obSeen: 0, zonesValid: 0, pdOk: 0,
+    stopValid: 0, targetsValid: 0, rrOk: 0, smtOk: 0, kzOk: 0, validSetups: 0,
+    rejections: new Map(), primary: new Map(), byModel: new Map(),
+    setupsBySession: new Map(),
+    rrDiag: { evaluated: 0, withTargets: 0, ge15: 0, ge20: 0, ge25: 0, ge30: 0, values: [] },
+    samples: [],
+    sampleCounter: 0,
+  };
+}
+
+function bump(map: Map<RejectionCode, number>, code: RejectionCode) {
+  map.set(code, (map.get(code) ?? 0) + 1);
+}
+
+/** Depth rank of a rejection — how far the candidate progressed (higher = deeper). */
+const STAGE_DEPTH: Record<RejectionCode, number> = {
+  NO_HTF_BIAS: 0, REGIME_UNCLEAR: 0, VOL_BLOCKED: 0,
+  OUTSIDE_SESSION: 1,
+  NO_LIQUIDITY_SWEEP: 2, WEAK_SWEEP: 3,
+  NO_MSS: 4, WEAK_MSS: 4,
+  NO_DISPLACEMENT: 5, WEAK_DISPLACEMENT: 5,
+  NO_FVG: 6, NO_ORDER_BLOCK: 6,
+  INVALID_FVG: 7, INVALID_ORDER_BLOCK: 7, NO_RETRACEMENT: 7,
+  WRONG_PREMIUM_DISCOUNT: 8,
+  INVALID_STOP: 9,
+  NO_STRUCTURAL_TARGET: 10, NO_LIQUIDITY: 10,
+  INSUFFICIENT_RR: 11,
+  SMT_REQUIRED_BUT_MISSING: 12,
+  DUPLICATE_SETUP: 12,
+  SCORE_BELOW_TIER: 13, COOLDOWN: 13,
+  SETUP_EXPIRED: 14,
+};
+
+export const STAGE_LABELS: Record<RejectionCode, string> = {
+  NO_HTF_BIAS: "HTF bias", REGIME_UNCLEAR: "Regime", VOL_BLOCKED: "Volatility",
+  OUTSIDE_SESSION: "Session",
+  NO_LIQUIDITY_SWEEP: "Liquidity sweep", WEAK_SWEEP: "Sweep quality",
+  NO_MSS: "MSS/CHOCH", WEAK_MSS: "MSS recency",
+  NO_DISPLACEMENT: "Displacement", WEAK_DISPLACEMENT: "Displacement quality",
+  NO_FVG: "FVG", NO_ORDER_BLOCK: "Order block",
+  INVALID_FVG: "FVG validity", INVALID_ORDER_BLOCK: "OB validity",
+  NO_RETRACEMENT: "Retracement",
+  WRONG_PREMIUM_DISCOUNT: "Premium/discount",
+  INVALID_STOP: "Structural stop",
+  NO_STRUCTURAL_TARGET: "Structural target", NO_LIQUIDITY: "Liquidity levels",
+  INSUFFICIENT_RR: "Minimum RR",
+  SMT_REQUIRED_BUT_MISSING: "SMT", DUPLICATE_SETUP: "Dedup",
+  SCORE_BELOW_TIER: "Tier score", COOLDOWN: "Cooldown",
+  SETUP_EXPIRED: "Order expiry",
+};
 
 // ---------------------------------------------------------------------------
 // Precomputed causal context for one symbol/interval series
@@ -179,6 +358,8 @@ export interface SeriesContext {
   zoneMitigatedAt: Map<string, number>;
   zoneCreatedIndex: Map<string, number>;
   zoneKind: Map<string, "FVG" | "OB">;
+  /** zones sorted by created index — enables O(log n) window scans */
+  zoneIndex: { zone: Zone; created: number; isFvg: boolean }[];
   swingLadder: Swing[];
   sweeps: LiquiditySweep[];
   pools: LiquidityPool[];
@@ -186,6 +367,7 @@ export interface SeriesContext {
   smtBearishAt: (i: number) => boolean;
   rangeAt: (i: number) => TrailingRange;
   funnel: FunnelCounters;
+  diag: DiagSink;
 }
 
 /** Detect FVG creation completion index (3-candle pattern completes at start+2). */
@@ -195,6 +377,27 @@ function fvgCreatedIndex(z: Zone): number {
 /** OB is "created" when the displacement candle after it closes (start+1). */
 function obCreatedIndex(z: Zone): number {
   return z.startIndex + 1;
+}
+
+/** Binary search: zones with created index in (from, to] — sorted index. */
+function zonesInWindow(
+  zoneIndex: { zone: Zone; created: number; isFvg: boolean }[],
+  from: number,
+  to: number
+): { zone: Zone; created: number; isFvg: boolean }[] {
+  // find first index with created > from
+  let lo = 0;
+  let hi = zoneIndex.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (zoneIndex[mid].created <= from) lo = mid + 1;
+    else hi = mid;
+  }
+  const out: { zone: Zone; created: number; isFvg: boolean }[] = [];
+  for (let k = lo; k < zoneIndex.length && zoneIndex[k].created <= to; k++) {
+    out.push(zoneIndex[k]);
+  }
+  return out;
 }
 
 /** Build every causal series the setup builder needs (pure — no I/O). */
@@ -219,10 +422,13 @@ export function buildSeriesContext(
   const zoneMitigatedAt = new Map<string, number>();
   const zoneCreatedIndex = new Map<string, number>();
   const zoneKind = new Map<string, "FVG" | "OB">();
+  const zoneIndex: { zone: Zone; created: number; isFvg: boolean }[] = [];
   for (const z of zones) {
     const isFvg = z.id.startsWith("fvg");
     zoneKind.set(z.id, isFvg ? "FVG" : "OB");
-    zoneCreatedIndex.set(z.id, isFvg ? fvgCreatedIndex(z) : obCreatedIndex(z));
+    const created = isFvg ? fvgCreatedIndex(z) : obCreatedIndex(z);
+    zoneCreatedIndex.set(z.id, created);
+    zoneIndex.push({ zone: z, created, isFvg });
     const mid = (z.top + z.bottom) / 2;
     for (let i = z.startIndex + (isFvg ? 3 : 2); i < candles.length; i++) {
       const c = candles[i];
@@ -236,6 +442,7 @@ export function buildSeriesContext(
       }
     }
   }
+  zoneIndex.sort((a, b) => a.created - b.created);
 
   const sweeps = detectSweeps(candles, 2, 100000);
   const pools = detectLiquidityPools(candles, 2, 0.0006, 100000);
@@ -270,8 +477,9 @@ export function buildSeriesContext(
   return {
     symbol, interval, candles, intervalSec, atrS, volRegimes, regime,
     structureEvents: walk.events, trendAt: walk.trendAt, biasAt,
-    zones, zoneMitigatedAt, zoneCreatedIndex, zoneKind,
+    zones, zoneMitigatedAt, zoneCreatedIndex, zoneKind, zoneIndex,
     sweeps, pools, smtBullishAt, smtBearishAt, rangeAt, funnel, swingLadder,
+    diag: newDiagSink(),
   };
 }
 
@@ -291,8 +499,14 @@ export interface CooldownState {
 
 export interface BuildResult {
   setup: Setup | null;
-  /** rejection tags even when a partial sequence existed (diagnostics #23) */
-  rejection: string | null;
+  /** PRIMARY rejection code of the deepest-rejected model (diagnostics §2) */
+  rejection: RejectionCode | null;
+}
+
+interface Candidate {
+  model: ModelKey;
+  setup: Setup;
+  stageDepth: number;
 }
 
 export function buildSetupAt(
@@ -301,75 +515,258 @@ export function buildSetupAt(
   cfg: EngineConfig,
   cooldown: CooldownState
 ): BuildResult {
-  const { candles, funnel } = ctx;
+  const { candles, funnel, diag } = ctx;
   funnel.barsEvaluated++;
   const c = candles[i];
   const atrI = ctx.atrS[i];
   if (atrI <= 0) return { setup: null, rejection: null };
 
-  // -- side from causal HTF bias ------------------------------------------
+  // ---- per-bar market-state funnel (counted once per bar) ----------------
   const bias = ctx.biasAt(i);
-  const side: Side | null =
-    bias === "BULLISH" ? "LONG" : bias === "BEARISH" ? "SHORT" : null;
-  if (!side || cfg.requireHtfBias) {
-    if (!side) return { setup: null, rejection: "htf-bias-unclear" };
-  }
-  if (side && cfg.requireHtfBias) funnel.htfBiasOk++;
-
-  // -- regime gates (spec #15, #16) ---------------------------------------
   const vol = ctx.volRegimes[i];
   const mkt = ctx.regime.regimeAt(i);
-  if (!side) return { setup: null, rejection: null };
-  if (cfg.blockedVolRegimes.includes(vol)) return { setup: null, rejection: `vol-${vol.toLowerCase()}` };
-  if (mkt === "UNCLEAR") return { setup: null, rejection: "regime-unclear" };
-  funnel.regimeOk++;
-
-  // -- session gate (spec #13) --------------------------------------------
   const session = sessionKeyAt(c.time);
-  if (cfg.sessions.length > 0 && !cfg.sessions.includes(session)) {
-    return { setup: null, rejection: "off-session" };
-  }
-  funnel.sessionOk++;
+  const inKz = session !== "off-session";
+  diag.bars++;
+  if (bias !== "NEUTRAL") diag.biasBars++;
+  if (inKz) diag.kzBars++;
+  const range = ctx.rangeAt(i);
+  const rangeOk = range.high - range.low >= 0.5 * atrI;
+  if (rangeOk) diag.rangeBars++;
+  const poolNear = ctx.pools.some((p) => Math.abs(p.price - c.close) <= 10 * atrI);
+  if (poolNear) diag.poolBars++;
+  const wantBullishBias = bias === "BULLISH";
+  const biasSweep = [...ctx.sweeps].reverse().find((s) => s.index < i && i - s.index <= cfg.maxSweepAgeBars && (wantBullishBias ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE"));
+  if (biasSweep) diag.sweepBars++;
+  const biasStructure = ctx.structureEvents.find((e) => e.index <= i && i - e.index <= cfg.maxStructureAgeBars && e.direction === (wantBullishBias ? "BULLISH" : "BEARISH"));
+  if (biasStructure) diag.structureBars++;
 
-  const dir = side === "LONG" ? 1 : -1;
+  // ---- side from causal HTF bias ------------------------------------------
+  const side: Side | null = bias === "BULLISH" ? "LONG" : bias === "BEARISH" ? "SHORT" : null;
+  if (!side) {
+    recordPrimary(ctx, i, "NO_HTF_BIAS", null, 0, session, cfg, atrI);
+    return { setup: null, rejection: "NO_HTF_BIAS" };
+  }
+  funnel.htfBiasOk++;
+  if (cfg.requireHtfBias && !side) return { setup: null, rejection: "NO_HTF_BIAS" };
+
+  // ---- regime gates -------------------------------------------------------
+  if (cfg.blockedVolRegimes.includes(vol)) {
+    recordPrimary(ctx, i, "VOL_BLOCKED", null, 0, session, cfg, atrI);
+    return { setup: null, rejection: "VOL_BLOCKED" };
+  }
+  if (mkt === "UNCLEAR") {
+    recordPrimary(ctx, i, "REGIME_UNCLEAR", null, 0, session, cfg, atrI);
+    return { setup: null, rejection: "REGIME_UNCLEAR" };
+  }
+  funnel.regimeOk++;
+  diag.contextBars++;
+
+  // ---- session gate (user filter; kill zone itself is optional, §5) -------
+  const sessionAllowed = cfg.sessions.length === 0 || cfg.sessions.includes(session) || ((session === "ny-am" || session === "ny-pm") && cfg.sessions.includes("ny"));
+  funnel.sessionOk += sessionAllowed ? 1 : 0;
+  if (!sessionAllowed) {
+    recordPrimary(ctx, i, "OUTSIDE_SESSION", null, 1, session, cfg, atrI);
+    return { setup: null, rejection: "OUTSIDE_SESSION" };
+  }
+
   const wantBullish = side === "LONG";
 
-  // -- 1. anchor liquidity sweep with rejection (spec #9) ------------------
-  const sweep = [...ctx.sweeps]
-    .reverse()
-    .find(
-      (s) =>
-        s.index < i &&
-        i - s.index <= cfg.maxSweepAgeBars &&
-        (wantBullish ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE")
-    );
-  if (!sweep) return { setup: null, rejection: "no-recent-sweep" };
-  funnel.sweepFound++;
-  const sweepAtr = ctx.atrS[sweep.index] || atrI;
-  const sweepAssessment = classifySweep(candles, sweep, sweepAtr);
-  if (sweepAssessment.cls !== "SWEEP_REJECTION" || sweepAssessment.quality < cfg.sweepQualityMin) {
-    return { setup: null, rejection: "weak-sweep" };
-  }
-  if (cfg.oneTradePerSweep && cooldown.usedSweepKeys.has(`${sweep.index}:${sweep.level}`)) {
-    return { setup: null, rejection: "sweep-already-traded" };
-  }
-  funnel.sweepQualityOk++;
+  // ---- evaluate every enabled model, keep the best candidate -------------
+  const candidates: Candidate[] = [];
+  let deepest: { code: RejectionCode; depth: number } | null = null;
 
-  // -- 2. MSS/BOS confirmation caused by the sweep (spec #6) ---------------
-  const structureEvent = ctx.structureEvents.find(
-    (e) =>
-      e.index > sweep.index &&
-      e.index <= i &&
-      i - e.index <= cfg.maxStructureAgeBars &&
-      e.direction === (wantBullish ? "BULLISH" : "BEARISH")
-  );
-  if (!structureEvent) return { setup: null, rejection: "no-structure-confirmation" };
-  funnel.structureOk++;
+  for (const model of MODEL_ORDER) {
+    if (!cfg.models.includes(model)) continue;
+    const stat = modelStat(ctx, model);
+    stat.opportunities++;
+    diag.candidates++;
+    const r = evaluateModel(ctx, i, cfg, cooldown, model, side, wantBullish, bias, vol, mkt, session, range, atrI);
+    if (r.candidate) {
+      stat.valid++;
+      candidates.push({ model, setup: r.candidate, stageDepth: 99 });
+    } else if (r.rejection) {
+      bump(stat.rejections, r.rejection);
+      bump(diag.rejections, r.rejection);
+      const depth = STAGE_DEPTH[r.rejection];
+      if (!deepest || depth > deepest.depth) deepest = { code: r.rejection, depth };
+    }
+  }
 
-  // -- 3. displacement between sweep and structure break (spec #8) ---------
-  const dispIndex = findDisplacementCandle(candles, sweep.index + 1, structureEvent.index, wantBullish ? "BULLISH" : "BEARISH");
-  if (dispIndex === null) return { setup: null, rejection: "no-displacement" };
-  // provisional FVG/structure flags for scoring (zone check refines below)
+  if (candidates.length === 0) {
+    // record the primary (deepest) rejection for this bar
+    const code = deepest?.code ?? null;
+    if (code) diag.primary.set(code, (diag.primary.get(code) ?? 0) + 1);
+    funnel.scoreOk += 0;
+    return { setup: null, rejection: code };
+  }
+
+  // best candidate by score (tie → first in MODEL_ORDER)
+  candidates.sort((a, b) => b.setup.totalScore - a.setup.totalScore || MODEL_ORDER.indexOf(a.model) - MODEL_ORDER.indexOf(b.model));
+  const best = candidates[0];
+  const setup = best.setup;
+  diag.validSetups++;
+  diag.setupsBySession.set(session, (diag.setupsBySession.get(session) ?? 0) + 1);
+  if (setup.smtAligned) diag.smtOk++;
+  if (inKz) diag.kzOk++;
+  funnel.scoreOk++;
+
+  // per-bar market funnel shares (approximate attribution — documented)
+  funnel.sweepFound += setup.confluence.liquiditySweep.detected ? 1 : 0;
+  funnel.sweepQualityOk += setup.confluence.liquiditySweep.detected ? 1 : 0;
+  funnel.structureOk += 1;
+  funnel.displacementOk += 1;
+  funnel.zoneFound += 1;
+  funnel.zoneQualityOk += 1;
+  funnel.premiumDiscountOk += setup.confluence.premiumDiscount.detected ? 1 : 0;
+  funnel.rrOk += 1;
+
+  return { setup, rejection: setup.tier === "NO_TRADE" ? "SCORE_BELOW_TIER" : null };
+}
+
+function modelStat(ctx: SeriesContext, model: ModelKey) {
+  let s = ctx.diag.byModel.get(model);
+  if (!s) {
+    s = { opportunities: 0, valid: 0, rejections: new Map() };
+    ctx.diag.byModel.set(model, s);
+  }
+  return s;
+}
+
+function recordPrimary(
+  ctx: SeriesContext,
+  i: number,
+  code: RejectionCode,
+  _trace: ConfluenceTrace | null,
+  depth: number,
+  session: string,
+  cfg: EngineConfig,
+  atrI: number
+) {
+  void i; void session; void cfg; void atrI; void depth; void _trace;
+  ctx.diag.primary.set(code, (ctx.diag.primary.get(code) ?? 0) + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Model evaluation — one candidate per model per bar
+// ---------------------------------------------------------------------------
+
+interface ModelEval {
+  candidate: Setup | null;
+  rejection: RejectionCode | null;
+  /** partial info for sample capture */
+  partial?: {
+    sweep: LiquiditySweep | null;
+    sweepAssessment: SweepAssessment | null;
+    structure: StructureEvent | null;
+    dispIndex: number | null;
+    zone: { zone: Zone; isFvg: boolean } | null;
+    entry: number | null;
+    initialStop: number | null;
+    target: number | null;
+    rr: number | null;
+    maxRr: number | null;
+    score: number | null;
+  };
+}
+
+function evaluateModel(
+  ctx: SeriesContext,
+  i: number,
+  cfg: EngineConfig,
+  cooldown: CooldownState,
+  model: ModelKey,
+  side: Side,
+  wantBullish: boolean,
+  bias: Trend,
+  vol: VolatilityRegime,
+  mkt: MarketRegime,
+  session: string,
+  range: TrailingRange,
+  atrI: number
+): ModelEval {
+  const { candles, diag } = ctx;
+  const c = candles[i];
+  const partial: NonNullable<ModelEval["partial"]> = {
+    sweep: null, sweepAssessment: null, structure: null, dispIndex: null,
+    zone: null, entry: null, initialStop: null, target: null, rr: null, maxRr: null, score: null,
+  };
+  const finish = (rejection: RejectionCode | null, candidate: Setup | null = null): ModelEval => {
+    if (rejection && diag.sampleCounter++ % 7 === 0 && diag.samples.length < 48) {
+      captureSample(ctx, i, cfg, model, side, rejection, partial, session);
+    }
+    return { candidate, rejection };
+  };
+
+  // Model D needs both zone kinds; A wants FVG; C wants OB; E wants either.
+  const wantFvg = model === "A_SWEEP_REVERSAL" || model === "B_FVG_CONTINUATION" || model === "D_FVG_OB_CONFLUENCE" || model === "E_SMT_REVERSAL";
+  const wantOb = model === "C_OB_REVERSAL" || model === "D_FVG_OB_CONFLUENCE" || model === "E_SMT_REVERSAL";
+
+  // -- 1. liquidity event ---------------------------------------------------
+  let sweep: LiquiditySweep | null = null;
+  let sweepAssessment: SweepAssessment | null = null;
+  let structureAnchor: StructureEvent | null = null;
+
+  if (model !== "B_FVG_CONTINUATION") {
+    // reversal models REQUIRE the sweep (their identity)
+    sweep = [...ctx.sweeps]
+      .reverse()
+      .find(
+        (s) =>
+          s.index < i &&
+          i - s.index <= cfg.maxSweepAgeBars &&
+          (wantBullish ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE")
+      ) ?? null;
+    if (!sweep) return finish("NO_LIQUIDITY_SWEEP");
+    diag.sweepsFound++;
+    partial.sweep = sweep;
+    const sweepAtr = ctx.atrS[sweep.index] || atrI;
+    sweepAssessment = classifySweep(candles, sweep, sweepAtr);
+    partial.sweepAssessment = sweepAssessment;
+    const classOk = sweepAssessment.cls === "SWEEP_REJECTION" || (cfg.allowUnconfirmedSweep && sweepAssessment.cls === "SWEEP_NO_CONFIRM");
+    if (!classOk || sweepAssessment.quality < cfg.sweepQualityMin) return finish("WEAK_SWEEP");
+    diag.sweepsQuality++;
+    if (cfg.oneTradePerSweep && cooldown.usedSweepKeys.has(`${sweep.index}:${sweep.level}`)) {
+      return finish("DUPLICATE_SETUP");
+    }
+    // structure must be caused by the sweep
+    structureAnchor = ctx.structureEvents.find(
+      (e) =>
+        e.index > sweep!.index &&
+        e.index <= i &&
+        i - e.index <= cfg.maxStructureAgeBars &&
+        e.direction === (wantBullish ? "BULLISH" : "BEARISH")
+    ) ?? null;
+    if (!structureAnchor) {
+      // is there a matching event just outside the recency window? → WEAK vs NONE
+      const stale = ctx.structureEvents.find(
+        (e) => e.index > sweep!.index && e.index <= i && e.direction === (wantBullish ? "BULLISH" : "BEARISH")
+      );
+      return finish(stale ? "WEAK_MSS" : "NO_MSS");
+    }
+    diag.structuresFound++;
+  } else {
+    // Model B: continuation — BOS/MSS in the bias direction, no sweep needed
+    structureAnchor = ctx.structureEvents.find(
+      (e) =>
+        e.index <= i &&
+        i - e.index <= cfg.maxStructureAgeBars &&
+        e.direction === (wantBullish ? "BULLISH" : "BEARISH")
+    ) ?? null;
+    if (!structureAnchor) {
+      const stale = ctx.structureEvents.find((e) => e.index <= i && e.direction === (wantBullish ? "BULLISH" : "BEARISH"));
+      return finish(stale ? "WEAK_MSS" : "NO_MSS");
+    }
+    diag.structuresFound++;
+  }
+  partial.structure = structureAnchor;
+  const anchorIndex = structureAnchor.index;
+
+  // -- 2. displacement leg ---------------------------------------------------
+  const dispFrom = model === "B_FVG_CONTINUATION" ? Math.max(0, anchorIndex - 8) : (sweep as LiquiditySweep).index + 1;
+  const dispIndex = findDisplacementCandle(candles, dispFrom, anchorIndex, wantBullish ? "BULLISH" : "BEARISH");
+  if (dispIndex === null) return finish("NO_DISPLACEMENT");
+  partial.dispIndex = dispIndex;
   const dispAssessment = assessDisplacement({
     candles,
     index: dispIndex,
@@ -378,158 +775,235 @@ export function buildSetupAt(
     createdFvg: true, // refined by zone selection; a zone in the window is required anyway
     brokeStructure: true,
   });
-  if (dispAssessment.quality < cfg.displacementQualityMin) {
-    return { setup: null, rejection: "weak-displacement" };
-  }
-  funnel.displacementOk++;
+  if (dispAssessment.quality < cfg.displacementQualityMin) return finish("WEAK_DISPLACEMENT");
+  diag.displacements++;
 
-  // -- 4. fresh FVG/OB created by the displacement leg (spec #10, #11) -----
-  const candidates = ctx.zones.filter((z) => {
-    if (z.direction !== (wantBullish ? "BULLISH" : "BEARISH")) return false;
-    const created = ctx.zoneCreatedIndex.get(z.id) ?? z.startIndex;
-    // the entry zone must be created BY this sequence: after the sweep and
-    // within a few bars of the MSS/BOS (the displacement leg that caused it)
-    if (created <= sweep.index || created > Math.min(i, structureEvent.index + 3)) return false;
-    const mit = ctx.zoneMitigatedAt.get(z.id);
-    if (mit !== undefined && mit <= i) return false;
-    // order must rest beyond price: long → zone below close, short → above
-    if (wantBullish && z.top >= c.close) return false;
-    if (!wantBullish && z.bottom <= c.close) return false;
-    // zone must be sane relative to the sweep extreme
-    if (wantBullish && z.bottom < sweep.extreme - 0.75 * atrI) return false;
-    if (!wantBullish && z.top > sweep.extreme + 0.75 * atrI) return false;
-    if (cfg.sameZoneCooldown && cooldown.blacklistedZones.has(z.id)) return false;
-    return true;
-  });
-  if (candidates.length === 0) return { setup: null, rejection: "no-entry-zone" };
-  funnel.zoneFound++;
+  // -- 3. entry zone(s) ------------------------------------------------------
+  const windowFrom = model === "B_FVG_CONTINUATION" ? Math.max(0, anchorIndex - 9) : (sweep as LiquiditySweep).index;
+  const windowTo = Math.min(i, anchorIndex + 3);
+  const zoneWindow = zonesInWindow(ctx.zoneIndex, windowFrom, windowTo);
+  const sweepExtreme = sweep ? sweep.extreme : null;
 
-  // pick best zone by quality
-  const range = ctx.rangeAt(i);
-  let best: { zone: Zone; quality: number; qnotes: string[] } | null = null;
-  for (const z of candidates) {
-    const isFvg = ctx.zoneKind.get(z.id) === "FVG";
-    const mid = (z.top + z.bottom) / 2;
-    const inCorrectHalf = wantBullish ? mid < range.equilibrium : mid > range.equilibrium;
+  let fvgPick: { zone: Zone; quality: number; notes: string[] } | null = null;
+  let obPick: { zone: Zone; quality: number; notes: string[] } | null = null;
+  let fvgInWindow = 0;
+  let obInWindow = 0;
+  const legEq = legEquilibrium(candles, sweep, i, wantBullish, anchorIndex);
+
+  for (const entry of zoneWindow) {
+    const { zone, isFvg } = entry;
+    if (zone.direction !== (wantBullish ? "BULLISH" : "BEARISH")) continue;
+    const mit = ctx.zoneMitigatedAt.get(zone.id);
+    if (mit !== undefined && mit <= i) continue; // silently skip mitigated
+    if (isFvg) fvgInWindow++;
+    else obInWindow++;
+    // order must rest beyond price: long → zone strictly below close
+    if (wantBullish && zone.top >= c.close) continue; // limit would cross / consumed
+    if (!wantBullish && zone.bottom <= c.close) continue;
+    // zone sane relative to the swept extreme
+    if (sweepExtreme !== null) {
+      if (wantBullish && zone.bottom < sweepExtreme - 0.75 * atrI) continue;
+      if (!wantBullish && zone.top > sweepExtreme + 0.75 * atrI) continue;
+    }
+    if (cfg.sameZoneCooldown && cooldown.blacklistedZones.has(zone.id)) continue;
+    const mid = (zone.top + zone.bottom) / 2;
+    const inCorrectHalf = wantBullish ? mid < legEq.equilibrium : mid > legEq.equilibrium;
     const q = isFvg
       ? fvgQuality({
-          candles, zone: z, atr: atrI, currentIndex: i,
-          sweepIndex: sweep.index, mssIndex: structureEvent.index,
+          candles, zone, atr: atrI, currentIndex: i,
+          sweepIndex: sweep ? sweep.index : null, mssIndex: anchorIndex,
           displacementIndex: dispIndex, inCorrectRangeHalf: inCorrectHalf,
           htfAligned: wantBullish ? bias === "BULLISH" : bias === "BEARISH",
         })
       : obQuality({
-          candles, zone: z, atr: atrI, currentIndex: i,
-          sweepIndex: sweep.index, mssIndex: structureEvent.index,
+          candles, zone, atr: atrI, currentIndex: i,
+          sweepIndex: sweep ? sweep.index : null, mssIndex: anchorIndex,
           inCorrectRangeHalf: inCorrectHalf,
         });
-    if (!best || q.score > best.quality) best = { zone: z, quality: q.score, qnotes: q.notes };
+    if (isFvg) {
+      if (!fvgPick || q.score > fvgPick.quality) fvgPick = { zone, quality: q.score, notes: q.notes };
+    } else {
+      if (!obPick || q.score > obPick.quality) obPick = { zone, quality: q.score, notes: q.notes };
+    }
   }
-  if (!best || best.quality < cfg.zoneQualityMin) {
-    return { setup: null, rejection: "weak-zone" };
-  }
-  funnel.zoneQualityOk++;
 
-  const zone = best.zone;
-  const isFvg = ctx.zoneKind.get(zone.id) === "FVG";
+  if (wantFvg && fvgInWindow > 0) diag.fvgSeen++;
+  if (wantOb && obInWindow > 0) diag.obSeen++;
+
+  // model-specific zone requirements
+  let pick: { zone: Zone; quality: number; notes: string[]; isFvg: boolean; overlap: boolean } | null = null;
+  if (model === "A_SWEEP_REVERSAL" || model === "B_FVG_CONTINUATION") {
+    if (fvgInWindow === 0) return finish("NO_FVG");
+    if (!fvgPick) return finish("INVALID_FVG");
+    if (fvgPick.quality < cfg.zoneQualityMin) return finish("INVALID_FVG");
+    pick = { ...fvgPick, isFvg: true, overlap: false };
+  } else if (model === "C_OB_REVERSAL") {
+    if (obInWindow === 0) return finish("NO_ORDER_BLOCK");
+    if (!obPick) return finish("INVALID_ORDER_BLOCK");
+    if (obPick.quality < cfg.zoneQualityMin) return finish("INVALID_ORDER_BLOCK");
+    pick = { ...obPick, isFvg: false, overlap: false };
+  } else if (model === "D_FVG_OB_CONFLUENCE") {
+    if (fvgInWindow === 0) return finish("NO_FVG");
+    if (obInWindow === 0) return finish("NO_ORDER_BLOCK");
+    if (!fvgPick || !obPick) return finish(fvgPick ? "INVALID_ORDER_BLOCK" : "INVALID_FVG");
+    // overlap in price between the best FVG and the best OB
+    const lo = Math.max(fvgPick.zone.bottom, obPick.zone.bottom);
+    const hi = Math.min(fvgPick.zone.top, obPick.zone.top);
+    const smaller = Math.min(fvgPick.zone.top - fvgPick.zone.bottom, obPick.zone.top - obPick.zone.bottom);
+    const overlapHeight = hi - lo;
+    if (overlapHeight <= 0.1 * Math.max(1e-9, smaller)) {
+      return finish("INVALID_FVG"); // both exist but no usable confluence
+    }
+    const quality = (fvgPick.quality + obPick.quality) / 2;
+    if (quality < cfg.zoneQualityMin) return finish("INVALID_FVG");
+    pick = {
+      zone: {
+        ...fvgPick.zone,
+        id: `d-${fvgPick.zone.id}-${obPick.zone.id}`,
+        top: hi, bottom: lo, // overlap region is the entry zone
+      },
+      quality, notes: [...fvgPick.notes, ...obPick.notes, "FVG and OB overlap (confluence)"],
+      isFvg: true, overlap: true,
+    };
+  } else {
+    // E_SMT_REVERSAL: FVG or OB, SMT required
+    if (fvgInWindow === 0 && obInWindow === 0) return finish("NO_FVG");
+    const smtAligned = wantBullish ? ctx.smtBullishAt(i) : ctx.smtBearishAt(i);
+    if (!smtAligned) return finish("SMT_REQUIRED_BUT_MISSING");
+    const bestBoth = pickBest(fvgPick, obPick);
+    if (!bestBoth) return finish(fvgInWindow ? "INVALID_FVG" : "INVALID_ORDER_BLOCK");
+    if (bestBoth.quality < cfg.zoneQualityMin) return finish(bestBoth === fvgPick ? "INVALID_FVG" : "INVALID_ORDER_BLOCK");
+    pick = { ...bestBoth, isFvg: bestBoth === fvgPick, overlap: false };
+  }
+
+  diag.zonesValid++;
+  partial.zone = { zone: pick.zone, isFvg: pick.isFvg };
+  const zone = pick.zone;
   const zoneMid = (zone.top + zone.bottom) / 2;
 
-  // -- 5. premium/discount within the sweep LEG dealing range (spec #12) ----
-  // The relevant dealing range for a retracement entry is the leg produced by
-  // the sequence itself: sweep extreme → post-displacement extreme. A
-  // retracement into the lower half of THAT leg is a discount (longs), upper
-  // half premium (shorts). A fixed lookback window would label every
-  // pullback "premium" in a trending market and block all continuation
-  // trades — the classic misuse of premium/discount.
-  let legExtreme = wantBullish ? -Infinity : Infinity;
-  for (let k = sweep.index; k <= i; k++) {
-    if (wantBullish) legExtreme = Math.max(legExtreme, candles[k].high);
-    else legExtreme = Math.min(legExtreme, candles[k].low);
-  }
-  const legLow = wantBullish ? sweep.extreme : legExtreme;
-  const legHigh = wantBullish ? legExtreme : sweep.extreme;
-  const legEq = (legHigh + legLow) / 2;
+  // -- 4. premium/discount within the sequence LEG (optional confluence) ----
   const depth = wantBullish
-    ? (legEq - zoneMid) / Math.max(1e-9, legEq - legLow)
-    : (zoneMid - legEq) / Math.max(1e-9, legHigh - legEq);
+    ? (legEq.equilibrium - zoneMid) / Math.max(1e-9, legEq.equilibrium - legEq.low)
+    : (zoneMid - legEq.equilibrium) / Math.max(1e-9, legEq.high - legEq.equilibrium);
   const depth01 = Math.max(0, Math.min(1, depth));
-  if (cfg.requireDiscountPremium && !(
-    wantBullish ? zoneMid < legEq : zoneMid > legEq
-  )) {
-    return { setup: null, rejection: "wrong-range-half" };
-  }
-  funnel.premiumDiscountOk++;
+  const pdOk = wantBullish ? zoneMid < legEq.equilibrium : zoneMid > legEq.equilibrium;
+  if (pdOk) diag.pdOk++;
+  if (cfg.requireDiscountPremium && !pdOk) return finish("WRONG_PREMIUM_DISCOUNT");
 
-  // -- 6. entry / structural stop (spec #4) --------------------------------
+  // -- 5. entry / structural stop -------------------------------------------
   const entry = wantBullish ? zone.top : zone.bottom; // proximal edge
+  partial.entry = entry;
   const buffer = 0.1 * atrI;
-  const protectedExtreme = sweep.extreme;
+  let protectedExtreme: number;
+  if (sweep) {
+    protectedExtreme = sweep.extreme;
+  } else {
+    // Model B: protect the most recent confirmed swing against the trade
+    const swing = [...ctx.swingLadder].reverse().find((s) => s.index + 3 <= i && (wantBullish ? s.type === "LOW" : s.type === "HIGH"));
+    protectedExtreme = swing ? swing.price : wantBullish ? zone.bottom : zone.top;
+  }
   const initialStop = wantBullish
     ? Math.min(zone.bottom, protectedExtreme) - buffer
     : Math.max(zone.top, protectedExtreme) + buffer;
+  partial.initialStop = initialStop;
   const riskPerUnit = Math.abs(entry - initialStop);
-  if (riskPerUnit < cfg.minStopAtrMult * atrI) return { setup: null, rejection: "stop-too-tight" };
-  if (riskPerUnit > cfg.maxStopAtrMult * atrI) return { setup: null, rejection: "stop-too-wide" };
-  if (riskPerUnit / entry > cfg.maxStopPctOfPrice) return { setup: null, rejection: "stop-too-wide" };
+  if (riskPerUnit < cfg.minStopAtrMult * atrI) return finish("INVALID_STOP");
+  if (riskPerUnit > cfg.maxStopAtrMult * atrI) return finish("INVALID_STOP");
+  if (riskPerUnit / entry > cfg.maxStopPctOfPrice) return finish("INVALID_STOP");
+  diag.stopValid++;
 
-  // -- 7. structural target ladder + minimum RR gate (spec #4, #5) ---------
+  // -- 6. structural target ladder + minimum RR gate ------------------------
+  diag.rrDiag.evaluated++;
   const prev = prevExtremes(candles, i, ctx.intervalSec);
-  const ladder = buildTargetLadder({
+  const ladderFull = buildTargetLadder({
     candles, index: i, side, entry, riskPerUnit,
     pools: ctx.pools, rangeHigh: range.high, rangeLow: range.low,
     prev, clusterAtr: atrI, swings: ctx.swingLadder,
   });
-  if (ladder.length === 0) return { setup: null, rejection: "no-structural-target" };
-  const rrToFinal = Math.abs(ladder[ladder.length - 1].price - entry) / riskPerUnit;
-  const rrToTp1 = Math.abs(ladder[0].price - entry) / riskPerUnit;
-  if (rrToFinal < cfg.minRR) return { setup: null, rejection: "insufficient-rr" };
-  funnel.rrOk++;
+  if (ladderFull.length === 0) {
+    // no levels at all → no liquidity; some levels but all on the wrong side
+    return finish(rawCandidateCount(candles, i, side, ctx.pools) === 0 ? "NO_LIQUIDITY" : "NO_STRUCTURAL_TARGET");
+  }
+  diag.rrDiag.withTargets++;
+  const tt = selectTradeTargets(ladderFull, entry, riskPerUnit);
+  partial.maxRr = round2(tt.maxRR);
+  const rrSample = diag.rrDiag.values;
+  if (rrSample.length < 4000) rrSample.push(round2(tt.maxRR));
+  if (tt.maxRR >= 1.5) diag.rrDiag.ge15++;
+  if (tt.maxRR >= 2) diag.rrDiag.ge20++;
+  if (tt.maxRR >= 2.5) diag.rrDiag.ge25++;
+  if (tt.maxRR >= 3) diag.rrDiag.ge30++;
+  diag.targetsValid++;
+  if (tt.maxRR < cfg.minRR) return finish("INSUFFICIENT_RR");
+  diag.rrOk++;
+  partial.target = tt.tp3 ? tt.tp3.price : null;
+  partial.rr = round2(tt.maxRR);
 
-  // -- 8. SMT confirmation (optional, spec #14) ----------------------------
+  // -- 7. optional confluence flags -----------------------------------------
   const smtAligned = wantBullish ? ctx.smtBullishAt(i) : ctx.smtBearishAt(i);
+  const inKillzone = sessionKeyAt(c.time) !== "off-session";
+  const sweepInKz = sweep ? sessionKeyAt(sweep.time) !== "off-session" : false;
 
-  // -- 9. categorized scoring (spec #18, anti-double-count caps) -----------
-  const sweepAge = i - sweep.index;
+  // -- 8. scoring ------------------------------------------------------------
+  const sweepAge = sweep ? i - sweep.index : 0;
   const scores = scoreSetup({
     cfg, side, bias, depth01,
-    sweepAssessment, sweepAge,
-    structureType: structureEvent.type,
+    sweep: sweep && sweepAssessment ? { assessment: sweepAssessment, age: sweepAge } : null,
+    structureType: structureAnchor.type,
+    structureAge: i - structureAnchor.index,
     dispQuality: dispAssessment.quality,
-    zoneKind: isFvg ? "FVG" : "OB",
-    zoneQuality: best.quality,
+    zoneKind: pick.isFvg ? (pick.overlap ? "FVG+OB" : "FVG") : "OB",
+    zoneQuality: pick.quality,
     zoneFresh: isZoneFresh(ctx, zone, i),
-    inKillzone: session !== "off-session",
-    sweepInKillzone: sessionKeyAt(sweep.time) !== "off-session",
+    inKillzone,
+    sweepInKillzone: sweepInKz,
     smtAligned,
-    rrToFinal,
+    rrToFinal: tt.maxRR,
     stopStructural: wantBullish
-      ? initialStop <= Math.min(zone.bottom, sweep.extreme)
-      : initialStop >= Math.max(zone.top, sweep.extreme),
-    targetStructural: ladder.some((t) => t.weight >= 0.7),
+      ? initialStop <= Math.min(zone.bottom, sweep ? sweep.extreme : zone.bottom)
+      : initialStop >= Math.max(zone.top, sweep ? sweep.extreme : zone.top),
+    targetStructural: ladderFull.some((t) => t.weight >= 0.7),
     mktRegime: mkt,
   });
   const totalScore = scores.context + scores.liquidity + scores.structure + scores.entry + scores.confirmation + scores.risk;
+  partial.score = totalScore;
   let tier = tierFor(totalScore, cfg);
   if (mkt === "RANGE" && totalScore < cfg.rangeRegimeMinScore) {
     tier = "NO_TRADE";
   }
-  if (tier !== "NO_TRADE") funnel.scoreOk++;
 
-  // -- assemble ------------------------------------------------------------
-  const events: SetupEvent[] = [
-    { kind: "HTF_BIAS", index: i, time: c.time, detail: `HTF bias ${bias}` },
-    { kind: "LIQUIDITY_SWEEP", index: sweep.index, time: sweep.time, detail: `${sweep.side === "SELL_SIDE" ? "Sellside" : "Buyside"} sweep @ ${sweep.level.toFixed(2)} (${sweepAssessment.cls}, q=${sweepAssessment.quality.toFixed(2)})` },
-    { kind: "DISPLACEMENT", index: dispIndex, time: candles[dispIndex].time, detail: `displacement q=${dispAssessment.quality.toFixed(2)} (${dispAssessment.rangeAtrMult}x ATR, body ${(dispAssessment.bodyRatio * 100).toFixed(0)}%)` },
-    { kind: structureEvent.type === "MSS" ? "MSS" : "BOS", index: structureEvent.index, time: structureEvent.time, detail: `${structureEvent.type} ${structureEvent.direction} @ ${structureEvent.level.toFixed(2)}` },
-    { kind: "ZONE_CREATED", index: ctx.zoneCreatedIndex.get(zone.id) ?? zone.startIndex, time: candles[ctx.zoneCreatedIndex.get(zone.id) ?? zone.startIndex].time, detail: `${isFvg ? "FVG" : "OB"} ${zone.direction} [${zone.bottom.toFixed(2)}–${zone.top.toFixed(2)}] q=${best.quality.toFixed(2)}` },
-    { kind: "PREMIUM_DISCOUNT", index: i, time: c.time, detail: `zone in ${wantBullish ? "discount" : "premium"} (depth ${(depth01 * 100).toFixed(0)}%)` },
-    { kind: "ENTRY_RETRACE", index: i, time: c.time, detail: `limit @ ${entry.toFixed(2)} (proximal edge)` },
-  ];
+  // -- confluence trace (spec §3) -------------------------------------------
+  const tfLabel = intervalLabelOf(ctx);
+  const rangeOkLocal = range.high - range.low >= 0.5 * atrI;
+  const confluence = buildTrace({
+    ctx, i, cfg, bias, range, rangeOk: rangeOkLocal,
+    sweep, sweepAssessment, structureAnchor, dispIndex, dispAssessment,
+    zone, zoneQuality: pick.quality, isFvg: pick.isFvg, overlap: pick.overlap,
+    fvgInWindow, obInWindow, wantFvg, wantOb,
+    session, smtAligned, pdOk, depth01,
+    entry, initialStop, riskPerUnit, tt, minRR: cfg.minRR,
+    totalScore, tier, tfLabel, atrI, vol, mkt,
+  });
 
+  // -- assemble ---------------------------------------------------------------
+  const events: SetupEvent[] = [];
+  events.push({ kind: "HTF_BIAS", index: i, time: c.time, detail: `HTF bias ${bias} (${tfLabel})` });
+  if (sweep && sweepAssessment) {
+    events.push({ kind: "LIQUIDITY_SWEEP", index: sweep.index, time: sweep.time, detail: `${sweep.side === "SELL_SIDE" ? "Sellside" : "Buyside"} sweep @ ${sweep.level.toFixed(2)} (${sweepAssessment.cls}, q=${sweepAssessment.quality.toFixed(2)})` });
+  }
+  events.push({ kind: "DISPLACEMENT", index: dispIndex, time: candles[dispIndex].time, detail: `displacement q=${dispAssessment.quality.toFixed(2)} (${dispAssessment.rangeAtrMult}x ATR, body ${(dispAssessment.bodyRatio * 100).toFixed(0)}%)` });
+  events.push({ kind: structureAnchor.type === "MSS" ? "MSS" : "BOS", index: anchorIndex, time: structureAnchor.time, detail: `${structureAnchor.type} ${structureAnchor.direction} @ ${structureAnchor.level.toFixed(2)}` });
+  events.push({ kind: "ZONE_CREATED", index: ctx.zoneCreatedIndex.get(zone.id) ?? zone.startIndex, time: candles[ctx.zoneCreatedIndex.get(zone.id) ?? zone.startIndex]?.time ?? c.time, detail: `${pick.overlap ? "FVG+OB overlap" : pick.isFvg ? "FVG" : "OB"} ${zone.direction} [${zone.bottom.toFixed(2)}–${zone.top.toFixed(2)}] q=${pick.quality.toFixed(2)}` });
+  events.push({ kind: "PREMIUM_DISCOUNT", index: i, time: c.time, detail: pdOk ? `zone in ${wantBullish ? "discount" : "premium"} (depth ${(depth01 * 100).toFixed(0)}%)` : `zone NOT in ${wantBullish ? "discount" : "premium"} (optional confluence, score only)` });
+  events.push({ kind: "ENTRY_RETRACE", index: i, time: c.time, detail: `limit @ ${entry.toFixed(2)} (proximal edge)` });
+
+  const modelLabel = modelLabelFor(model);
   const rationale = [
-    `Sequence verified: sweep → displacement → ${structureEvent.type} → ${isFvg ? "FVG" : "OB"} → retracement.`,
-    ...best.qnotes.map((n) => `Zone: ${n}`),
-    ...(smtAligned ? ["XAU/XAG SMT divergence confirms."] : []),
+    `${modelLabel}: ${sweep ? "sweep → " : ""}${structureAnchor.type} → displacement → ${pick.overlap ? "FVG+OB overlap" : pick.isFvg ? "FVG" : "OB"} retracement.`,
+    pdOk ? "Premium/discount confluence present." : "Premium/discount NOT aligned (optional confluence, no gate).",
+    smtAligned ? "XAU/XAG SMT divergence confirms." : "No SMT confirmation (optional).",
+    inKillzone ? `Inside ${SESSION_LABELS[session as keyof typeof SESSION_LABELS] ?? session}.` : "Outside kill zones (optional confluence, no gate).",
+    ...pick.notes.map((n) => `Zone: ${n}`),
   ];
   const rejections = tier === "NO_TRADE" ? [`score ${totalScore} below ${cfg.tierB} threshold`] : [];
 
@@ -537,36 +1011,82 @@ export function buildSetupAt(
     side,
     decidedIndex: i,
     decidedTime: c.time,
+    model,
     entry,
     initialStop,
     riskPerUnit,
     events,
+    confluence,
     zone: {
-      id: zone.id, kind: isFvg ? "FVG" : "OB", direction: zone.direction,
+      id: zone.id, kind: pick.overlap ? "FVG" : pick.isFvg ? "FVG" : "OB", direction: zone.direction,
       top: zone.top, bottom: zone.bottom,
       createdIndex: ctx.zoneCreatedIndex.get(zone.id) ?? zone.startIndex,
-      quality: best.quality, notes: best.qnotes,
+      quality: pick.quality, notes: pick.notes,
     },
-    targets: ladder.map((t: StructuralTarget) => ({
+    targets: [tt.tp1, tt.tp2, tt.tp3].filter((t): t is StructuralTarget => t !== null).map((t) => ({
       price: t.price, source: t.source,
-      rr: Math.round((Math.abs(t.price - entry) / riskPerUnit) * 100) / 100,
+      rr: round2(Math.abs(t.price - entry) / riskPerUnit),
     })),
-    rrToFinal: Math.round(rrToFinal * 100) / 100,
-    rrToTp1: Math.round(rrToTp1 * 100) / 100,
+    rrToFinal: round2(tt.maxRR),
+    rrToTp1: round2(tt.rrToTp1),
     scores,
     totalScore,
     tier,
-    session,
+    session: session as Setup["session"],
     htfBias: bias,
     volRegime: vol,
     mktRegime: mkt,
     smtAligned,
-    sweepKey: `${sweep.index}:${sweep.level}`,
+    sweepKey: sweep ? `${sweep.index}:${sweep.level}` : `bos:${anchorIndex}`,
     rationale,
     rejections,
   };
 
-  return { setup, rejection: tier === "NO_TRADE" ? "below-tier" : null };
+  return finish(tier === "NO_TRADE" ? "SCORE_BELOW_TIER" : null, setup);
+}
+
+function pickBest(a: { zone: Zone; quality: number; notes: string[] } | null, b: { zone: Zone; quality: number; notes: string[] } | null) {
+  if (!a) return b;
+  if (!b) return a;
+  return a.quality >= b.quality ? a : b;
+}
+
+function modelLabelFor(model: ModelKey): string {
+  switch (model) {
+    case "A_SWEEP_REVERSAL": return "Model A — Liquidity Sweep Reversal";
+    case "B_FVG_CONTINUATION": return "Model B — FVG Continuation";
+    case "C_OB_REVERSAL": return "Model C — Order Block Reversal";
+    case "D_FVG_OB_CONFLUENCE": return "Model D — FVG+OB Confluence";
+    case "E_SMT_REVERSAL": return "Model E — SMT Reversal";
+  }
+}
+
+/** Dealing range of the sequence LEG: sweep extreme → post-displacement extreme. */
+function legEquilibrium(
+  candles: Candle[],
+  sweep: LiquiditySweep | null,
+  i: number,
+  wantBullish: boolean,
+  anchorIndex: number
+): { high: number; low: number; equilibrium: number } {
+  const from = sweep ? sweep.index : Math.max(0, anchorIndex - 8);
+  let legExtreme = wantBullish ? -Infinity : Infinity;
+  for (let k = from; k <= i; k++) {
+    if (wantBullish) legExtreme = Math.max(legExtreme, candles[k].high);
+    else legExtreme = Math.min(legExtreme, candles[k].low);
+  }
+  const legLow = wantBullish ? (sweep ? sweep.extreme : legExtreme) : legExtreme;
+  const legHigh = wantBullish ? legExtreme : sweep ? sweep.extreme : legExtreme;
+  // fall back when no sweep anchors the leg
+  const lo = Number.isFinite(legLow) ? legLow : Math.min(legHigh, legExtreme);
+  const hi = Number.isFinite(legHigh) ? legHigh : Math.max(lo, legExtreme);
+  return { high: hi, low: lo, equilibrium: (hi + lo) / 2 };
+}
+
+function rawCandidateCount(candles: Candle[], i: number, side: Side, pools: LiquidityPool[]): number {
+  // crude: any pool or any candle extreme beyond entry on the trade side
+  void candles; void i;
+  return pools.length > 0 ? pools.length : 0;
 }
 
 function isZoneFresh(ctx: SeriesContext, zone: Zone, i: number): boolean {
@@ -580,6 +1100,350 @@ function isZoneFresh(ctx: SeriesContext, zone: Zone, i: number): boolean {
   return true;
 }
 
+function intervalLabelOf(ctx: SeriesContext): string {
+  const s = ctx.intervalSec;
+  if (s <= 300) return "5m";
+  if (s <= 900) return "15m";
+  if (s <= 3600) return "1H";
+  if (s <= 14400) return "4H";
+  return "1D";
+}
+
+function round2(x: number): number {
+  return Math.round(x * 100) / 100;
+}
+
+// ---------------------------------------------------------------------------
+// Confluence trace construction (spec §3)
+// ---------------------------------------------------------------------------
+
+function item(detected: boolean, opts: Partial<ConfluenceItem> & { reason: string }): ConfluenceItem {
+  return {
+    detected,
+    timestamp: opts.timestamp ?? null,
+    price: opts.price ?? null,
+    range: opts.range ?? null,
+    timeframe: opts.timeframe ?? "—",
+    reason: opts.reason,
+  };
+}
+
+function buildTrace(a: {
+  ctx: SeriesContext;
+  i: number;
+  cfg: EngineConfig;
+  bias: Trend;
+  range: TrailingRange;
+  rangeOk: boolean;
+  sweep: LiquiditySweep | null;
+  sweepAssessment: SweepAssessment | null;
+  structureAnchor: StructureEvent;
+  dispIndex: number | null;
+  dispAssessment: { quality: number; rangeAtrMult: number; bodyRatio: number } | null;
+  zone: Zone;
+  zoneQuality: number;
+  isFvg: boolean;
+  overlap: boolean;
+  fvgInWindow: number;
+  obInWindow: number;
+  wantFvg: boolean;
+  wantOb: boolean;
+  session: string;
+  smtAligned: boolean;
+  pdOk: boolean;
+  depth01: number;
+  entry: number;
+  initialStop: number;
+  riskPerUnit: number;
+  tt: { tp1: StructuralTarget | null; tp2: StructuralTarget | null; tp3: StructuralTarget | null; maxRR: number };
+  minRR: number;
+  totalScore: number;
+  tier: Tier;
+  tfLabel: string;
+  atrI: number;
+  vol: VolatilityRegime;
+  mkt: MarketRegime;
+}): ConfluenceTrace {
+  const tf = a.tfLabel;
+  const c = a.ctx.candles[a.i];
+  const sweep = a.sweep;
+  const poolNear = a.ctx.pools.some((p) => Math.abs(p.price - c.close) <= 10 * a.atrI);
+  return {
+    htfBias: item(a.bias !== "NEUTRAL", {
+      timestamp: c.time, price: c.close, timeframe: tf,
+      reason: `4H/1H structure walk on closed candles says ${a.bias}; trading ${a.bias === "BULLISH" ? "LONG" : a.bias === "BEARISH" ? "SHORT" : "no side"}.`,
+    }),
+    dealingRange: item(a.rangeOk, {
+      price: a.range.equilibrium, range: `${a.range.low.toFixed(2)}–${a.range.high.toFixed(2)}`, timeframe: tf,
+      reason: `Trailing ${96}-bar dealing range width ${(a.range.high - a.range.low).toFixed(2)} (≥ 0.5 ATR = valid).`,
+    }),
+    premiumDiscount: item(a.pdOk, {
+      price: a.zone.top !== undefined ? (a.zone.top + a.zone.bottom) / 2 : null, timeframe: tf,
+      reason: a.pdOk
+        ? `Entry zone in the ${a.bias === "BULLISH" ? "discount" : "premium"} half of the sequence leg (depth ${(a.depth01 * 100).toFixed(0)}%).`
+        : `Entry zone NOT in the ${a.bias === "BULLISH" ? "discount" : "premium"} half — optional confluence, contributes no score bonus (gate ${a.cfg.requireDiscountPremium ? "ON" : "OFF"}).`,
+    }),
+    liquidityPool: item(poolNear, {
+      timeframe: tf,
+      reason: poolNear
+        ? "Equal-high/low pool(s) exist within 10 ATR of price (resting liquidity)."
+        : "No equal-high/low pool within 10 ATR — targets rely on swings/session/previous-period liquidity.",
+    }),    liquiditySweep: item(!!sweep, {
+      timestamp: sweep?.time ?? null, price: sweep?.level ?? null, timeframe: tf,
+      reason: sweep && a.sweepAssessment
+        ? `${sweep.side === "SELL_SIDE" ? "Sell-side" : "Buy-side"} sweep at ${sweep.level.toFixed(2)}: ${a.sweepAssessment.cls}, quality ${a.sweepAssessment.quality.toFixed(2)} (min ${a.cfg.sweepQualityMin}), wick ${a.sweepAssessment.wickBeyondAtr}× ATR beyond level, close-back ${(a.sweepAssessment.closeBackRatio * 100).toFixed(0)}%.`
+        : "No recent sweep required — this candidate comes from the continuation model (BOS leg provides the liquidity event).",
+    }),
+    mss: item(true, {
+      timestamp: a.structureAnchor.time, price: a.structureAnchor.level, timeframe: tf,
+      reason: `${a.structureAnchor.type} ${a.structureAnchor.direction} confirmed at index ${a.structureAnchor.index} (within ${a.cfg.maxStructureAgeBars}-bar recency window).`,
+    }),
+    displacement: item(a.dispIndex !== null, {
+      timestamp: a.dispIndex !== null ? a.ctx.candles[a.dispIndex].time : null, timeframe: tf,
+      reason: a.dispAssessment
+        ? `Displacement candle #${a.dispIndex}: quality ${a.dispAssessment.quality.toFixed(2)} (min ${a.cfg.displacementQualityMin}), ${a.dispAssessment.rangeAtrMult}× ATR range, ${(a.dispAssessment.bodyRatio * 100).toFixed(0)}% body.`
+        : "No displacement candle found in the leg.",
+    }),
+    fvg: item(a.wantFvg && a.fvgInWindow > 0, {
+      timestamp: a.ctx.candles[a.zone.startIndex]?.time ?? null,
+      range: `${a.zone.bottom.toFixed(2)}–${a.zone.top.toFixed(2)}`, timeframe: tf,
+      reason: a.wantFvg
+        ? a.overlap
+          ? `FVG present and OVERLAPS the order block (confluence entry), quality ${a.zoneQuality.toFixed(2)}.`
+          : `FVG selected as entry zone (fresh, created by the displacement leg), quality ${a.zoneQuality.toFixed(2)}.`
+        : "Model does not use FVG entries.",
+    }),
+    orderBlock: item(a.wantOb && a.obInWindow > 0, {
+      timestamp: a.ctx.candles[a.zone.startIndex]?.time ?? null,
+      range: a.overlap ? `${a.zone.bottom.toFixed(2)}–${a.zone.top.toFixed(2)}` : null,
+      timeframe: tf,
+      reason: a.wantOb
+        ? a.overlap
+          ? `OB present and OVERLAPS the FVG (confluence entry).`
+          : `OB selected as entry zone, quality ${a.zoneQuality.toFixed(2)}.`
+        : "Model does not use OB entries (FVG entry preferred).",
+    }),
+    session: item(a.session !== "off-session", {
+      timestamp: c.time, timeframe: tf,
+      reason: `${SESSION_LABELS[a.session as keyof typeof SESSION_LABELS] ?? a.session} — kill zone is an OPTIONAL score confluence (gate ${a.cfg.requireKillzone ? "ON" : "OFF"}); sessions filter: ${a.cfg.sessions.length ? a.cfg.sessions.join(", ") : "all"}.`,
+    }),
+    smt: item(a.smtAligned, {
+      timestamp: c.time, timeframe: tf,
+      reason: a.smtAligned
+        ? "XAU/XAG SMT divergence aligned within the 20-bar window."
+        : "No aligned SMT divergence in the window — optional confluence, not required.",
+    }),
+    structuralStop: item(true, {
+      price: a.initialStop, timeframe: tf,
+      reason: `Initial stop ${(Math.abs(a.entry - a.initialStop) / Math.max(1e-9, a.atrI)).toFixed(2)}× ATR beyond the protected extreme (sweep low/high or confirmed swing) — sanity band ${a.cfg.minStopAtrMult}–${a.cfg.maxStopAtrMult}× ATR.`,
+    }),
+    structuralTarget: item(!!a.tt.tp1, {
+      price: a.tt.tp1?.price ?? null, timeframe: tf,
+      reason: a.tt.tp1
+        ? `Ladder: TP1 ${a.tt.tp1.source} @ ${a.tt.tp1.price.toFixed(2)}${a.tt.tp2 ? `, TP2 ${a.tt.tp2.source} @ ${a.tt.tp2.price.toFixed(2)}` : ""}${a.tt.tp3 ? `, TP3 ${a.tt.tp3.source} @ ${a.tt.tp3.price.toFixed(2)}` : ""}.`
+        : "No structural liquidity level beyond entry.",
+    }),
+    rr: item(a.tt.maxRR >= a.minRR, {
+      price: a.tt.tp3?.price ?? null, timeframe: tf,
+      reason: `Max available structural RR ${a.tt.maxRR.toFixed(2)}R vs required ${a.minRR}R (TP1 ${a.tt.tp1 ? (Math.abs(a.tt.tp1.price - a.entry) / Math.max(1e-9, a.riskPerUnit)).toFixed(2) : "—"}R).`,
+    }),
+    score: item(a.tier !== "NO_TRADE", {
+      timeframe: tf,
+      reason: `Total score ${a.totalScore}/100 → tier ${a.tier} (thresholds A+ ${a.cfg.tierAPlus} / A ${a.cfg.tierA} / B ${a.cfg.tierB}).`,
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Live strategy-state probe (spec §4 — "WHY NO TRADE?")
+// ---------------------------------------------------------------------------
+
+export interface ProbeCondition {
+  key: string;
+  label: string;
+  core: boolean; // core requirement (§5) vs optional confluence
+  detected: boolean;
+  timestamp: number | null;
+  price: number | null;
+  reason: string;
+}
+
+export interface ProbeResult {
+  side: Side | null;
+  conditions: ProbeCondition[];
+  waitingFor: string[];
+  perModel: { model: ModelKey; rejection: RejectionCode | null }[];
+  barTime: number;
+}
+
+/**
+ * Evaluate every confluence condition on a bar WITHOUT building a trade —
+ * used by the live "WHY NO TRADE?" panel so the checklist reflects the
+ * actual strategy state, not a hardcoded message.
+ */
+export function probeSetupState(ctx: SeriesContext, i: number, cfg: EngineConfig): ProbeResult {
+  const { candles } = ctx;
+  const c = candles[i];
+  const atrI = ctx.atrS[i];
+  const bias = ctx.biasAt(i);
+  const side: Side | null = bias === "BULLISH" ? "LONG" : bias === "BEARISH" ? "SHORT" : null;
+  const wantBullish = bias === "BULLISH";
+  const session = sessionKeyAt(c.time);
+  const conditions: ProbeCondition[] = [];
+  const push = (key: string, label: string, core: boolean, detected: boolean, reason: string, timestamp: number | null = null, price: number | null = null) =>
+    conditions.push({ key, label, core, detected, reason, timestamp, price });
+
+  push("htfBias", "HTF bias", true, bias !== "NEUTRAL",
+    bias === "NEUTRAL" ? "No 4H/1H structure break on closed candles yet — no directional context." : `HTF structure says ${bias}.`, c.time, c.close);
+
+  const range = ctx.rangeAt(i);
+  const rangeOk = atrI > 0 && range.high - range.low >= 0.5 * atrI;
+  push("dealingRange", "Dealing range", true, rangeOk,
+    rangeOk ? `Trailing range ${range.low.toFixed(2)}–${range.high.toFixed(2)} (EQ ${range.equilibrium.toFixed(2)}).` : "Trailing range too narrow vs volatility — no meaningful dealing range.", c.time, range.equilibrium);
+
+  const poolNear = atrI > 0 && ctx.pools.some((p) => Math.abs(p.price - c.close) <= 10 * atrI);
+  push("liquidityPool", "Liquidity pool identified", true, poolNear,
+    poolNear ? "Equal-high/low pool(s) within 10 ATR of price." : "No equal-high/low pool near price — waiting for liquidity to build.", c.time, null);
+
+  push("session", "Kill zone / session", false, session !== "off-session",
+    `${session === "off-session" ? "Outside all kill zones" : `Inside ${SESSION_LABELS[session]}`} — kill zone is an optional score confluence.`, c.time, null);
+
+  const sweep = side
+    ? [...ctx.sweeps].reverse().find((s) => s.index < i && i - s.index <= cfg.maxSweepAgeBars && (wantBullish ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE")) ?? null
+    : null;
+  const sweepAssessment = sweep ? classifySweep(candles, sweep, ctx.atrS[sweep.index] || atrI) : null;
+  const sweepOk = !!sweep && !!sweepAssessment && (sweepAssessment.cls === "SWEEP_REJECTION" || (cfg.allowUnconfirmedSweep && sweepAssessment.cls === "SWEEP_NO_CONFIRM")) && sweepAssessment.quality >= cfg.sweepQualityMin;
+  push("liquiditySweep", "Liquidity sweep", true, sweepOk,
+    !sweep
+      ? side
+        ? `No recent ${wantBullish ? "sell-side (low)" : "buy-side (high)"} sweep within ${cfg.maxSweepAgeBars} bars.`
+        : "No tradeable side yet (HTF bias unclear)."
+      : !sweepAssessment
+        ? "Sweep could not be classified."
+        : `${sweepAssessment.cls} at ${sweep.level.toFixed(2)} — quality ${sweepAssessment.quality.toFixed(2)} vs min ${cfg.sweepQualityMin}${sweepOk ? "" : " (below threshold)"}.`,
+    sweep?.time ?? null, sweep?.level ?? null);
+
+  const structure = side
+    ? ctx.structureEvents.find((e) => e.index <= i && i - e.index <= cfg.maxStructureAgeBars && e.direction === (wantBullish ? "BULLISH" : "BEARISH")) ?? null
+    : null;
+  push("mss", "MSS / CHOCH", true, !!structure,
+    structure
+      ? `${structure.type} ${structure.direction} @ ${structure.level.toFixed(2)} within the recency window.`
+      : side
+        ? `No ${wantBullish ? "bullish" : "bearish"} MSS/BOS within ${cfg.maxStructureAgeBars} bars.`
+        : "Waiting for HTF bias before structure matters.",
+    structure?.time ?? null, structure?.level ?? null);
+
+  let dispOk = false;
+  let dispReason = side ? "Waiting for a sweep/structure anchor first." : "No tradeable side yet.";
+  if (side && structure) {
+    const from = sweep ? sweep.index + 1 : Math.max(0, structure.index - 8);
+    const dispIndex = findDisplacementCandle(candles, from, structure.index, wantBullish ? "BULLISH" : "BEARISH");
+    if (dispIndex !== null) {
+      const da = assessDisplacement({ candles, index: dispIndex, direction: wantBullish ? "BULLISH" : "BEARISH", atr: ctx.atrS[dispIndex] || atrI, createdFvg: true, brokeStructure: true });
+      dispOk = da.quality >= cfg.displacementQualityMin;
+      dispReason = dispOk
+        ? `Displacement quality ${da.quality.toFixed(2)} (${da.rangeAtrMult}× ATR).`
+        : `Displacement too weak: ${da.quality.toFixed(2)} vs min ${cfg.displacementQualityMin}.`;
+    } else {
+      dispReason = "No directional burst between the liquidity event and the structure break.";
+    }
+  }
+  push("displacement", "Displacement", true, dispOk, dispReason);
+
+  // fresh zones created by the most recent sequence window
+  const windowFrom = sweep ? sweep.index : Math.max(0, i - 12);
+  const zoneWindow = zonesInWindow(ctx.zoneIndex, windowFrom, Math.min(i, (structure?.index ?? i) + 3));
+  let fvgOk = false;
+  let obOk = false;
+  let fvgReason = "No fresh FVG created by the sequence leg.";
+  let obReason = "No fresh order block created by the sequence leg.";
+  for (const { zone, isFvg } of zoneWindow) {
+    if (zone.direction !== (wantBullish ? "BULLISH" : "BEARISH")) continue;
+    const mit = ctx.zoneMitigatedAt.get(zone.id);
+    if (mit !== undefined && mit <= i) continue;
+    if (wantBullish ? zone.top >= c.close : zone.bottom <= c.close) continue;
+    if (isFvg && !fvgOk) {
+      fvgOk = true;
+      fvgReason = `Fresh FVG ${zone.bottom.toFixed(2)}–${zone.top.toFixed(2)} waiting for retracement.`;
+    }
+    if (!isFvg && !obOk) {
+      obOk = true;
+      obReason = `Fresh OB ${zone.bottom.toFixed(2)}–${zone.top.toFixed(2)} waiting for retracement.`;
+    }
+  }
+  push("fvg", "FVG (entry zone)", true, fvgOk, fvgReason);
+  push("orderBlock", "Order block (entry zone)", true, obOk, obReason);
+
+  const smtAligned = side ? (wantBullish ? ctx.smtBullishAt(i) : ctx.smtBearishAt(i)) : false;
+  push("smt", "SMT divergence (XAU/XAG)", false, smtAligned,
+    smtAligned ? "XAU/XAG SMT divergence aligned within the 20-bar window." : "No aligned SMT divergence — optional confirmation, never required.");
+
+  // per-model outcome for the "what blocked each model" footer
+  const perModel: ProbeResult["perModel"] = [];
+  if (atrI > 0 && side && cfg.models.length > 0) {
+    const cooldown: CooldownState = { usedSweepKeys: new Set(), blacklistedZones: new Set(), lastSignalIndex: -Infinity };
+    for (const model of MODEL_ORDER) {
+      if (!cfg.models.includes(model)) continue;
+      const r = evaluateModel(ctx, i, cfg, cooldown, model, side, wantBullish, bias, ctx.volRegimes[i], ctx.regime.regimeAt(i), session, range, atrI);
+      perModel.push({ model, rejection: r.rejection });
+    }
+  }
+
+  // what must happen next — the first failed CORE conditions in chain order
+  const waitingFor: string[] = [];
+  if (!side) {
+    waitingFor.push("A 4H/1H structure break to establish directional bias");
+  } else {
+    if (!sweepOk) waitingFor.push(`${wantBullish ? "Sell-side (low)" : "Buy-side (high)"} liquidity sweep with rejection`);
+    if (!structure) waitingFor.push(`${wantBullish ? "Bullish" : "Bearish"} MSS/CHOCH`);
+    if (!dispOk) waitingFor.push("Displacement leg");
+    if (!fvgOk && !obOk) waitingFor.push("Fresh FVG/OB created by the displacement leg");
+    else waitingFor.push("Retracement into the entry zone");
+  }
+
+  return { side, conditions, waitingFor, perModel, barTime: c.time };
+}
+
+function captureSample(
+  ctx: SeriesContext,
+  i: number,
+  cfg: EngineConfig,
+  model: ModelKey,
+  side: Side,
+  rejection: RejectionCode,
+  partial: NonNullable<ModelEval["partial"]>,
+  session: string
+) {
+  const { candles } = ctx;
+  const win = 20;
+  const from = Math.max(0, i - win);
+  const to = Math.min(candles.length - 1, i + win);
+  const window: RejectedSetupSample["candles"] = [];
+  for (let k = from; k <= to; k++) {
+    const cc = candles[k];
+    window.push({ t: cc.time, o: cc.open, h: cc.high, l: cc.low, c: cc.close });
+  }
+  ctx.diag.samples.push({
+    time: candles[i].time,
+    index: i,
+    model,
+    side,
+    rejection,
+    stageReached: STAGE_LABELS[rejection],
+    session,
+    entry: partial.entry !== null ? round2(partial.entry) : null,
+    initialStop: partial.initialStop !== null ? round2(partial.initialStop) : null,
+    target: partial.target,
+    rr: partial.rr,
+    maxRrAvailable: partial.maxRr,
+    score: partial.score,
+    trace: null, // trace is built only for valid candidates; partial info lives in the fields above
+    candles: window,
+    candleStartIndex: from,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Scoring model (spec #18) — six capped categories
 // ---------------------------------------------------------------------------
@@ -589,11 +1453,12 @@ export function scoreSetup(args: {
   side: Side;
   bias: Trend;
   depth01: number;
-  sweepAssessment: SweepAssessment;
-  sweepAge: number;
+  /** null for Model B (continuation has no sweep) */
+  sweep: { assessment: SweepAssessment; age: number } | null;
   structureType: "BOS" | "MSS";
+  structureAge: number;
   dispQuality: number;
-  zoneKind: "FVG" | "OB";
+  zoneKind: "FVG" | "OB" | "FVG+OB";
   zoneQuality: number;
   zoneFresh: boolean;
   inKillzone: boolean;
@@ -605,7 +1470,7 @@ export function scoreSetup(args: {
   mktRegime: MarketRegime;
 }): CategoryScores {
   const {
-    depth01, sweepAssessment, sweepAge, structureType, dispQuality,
+    depth01, sweep, structureType, structureAge, dispQuality,
     zoneKind, zoneQuality, zoneFresh, inKillzone, sweepInKillzone,
     smtAligned, rrToFinal, stopStructural, targetStructural, cfg,
   } = args;
@@ -614,22 +1479,28 @@ export function scoreSetup(args: {
   // dealing-range depth of the entry zone → up to 8
   const context = 12 + Math.round(4 + depth01 * 4);
 
-  // LIQUIDITY (cap 20): sweep quality ≤12, recency ≤4, meaningful level ≤4
-  const recency = Math.max(0, 1 - sweepAge / cfg.maxSweepAgeBars);
-  const liquidity = Math.min(
-    20,
-    Math.round(sweepAssessment.quality * 12 + recency * 4 + (sweepAssessment.closeBackRatio >= 0.7 ? 4 : 2))
-  );
+  // LIQUIDITY (cap 20): sweep quality ≤12, recency ≤4, close-back ≤4.
+  // Continuation candidates score on structure recency + displacement instead.
+  let liquidity: number;
+  if (sweep) {
+    const recency = Math.max(0, 1 - sweep.age / cfg.maxSweepAgeBars);
+    liquidity = Math.min(
+      20,
+      Math.round(sweep.assessment.quality * 12 + recency * 4 + (sweep.assessment.closeBackRatio >= 0.7 ? 4 : 2))
+    );
+  } else {
+    const structureRecency = Math.max(0, 1 - structureAge / cfg.maxStructureAgeBars);
+    liquidity = Math.min(20, Math.round(structureRecency * 8 + dispQuality * 12));
+  }
 
   // STRUCTURE (cap 20): MSS 12 / BOS 8, displacement quality ≤8
   const structure = Math.min(20, (structureType === "MSS" ? 12 : 8) + Math.round(dispQuality * 8));
 
-  // ENTRY (cap 20): zone kind ≤10 (FVG 8 / OB 6 / both +2 handled by quality),
+  // ENTRY (cap 20): zone kind ≤10 (FVG 8 / OB 6 / FVG+OB overlap 10),
   // zone quality ≤4, freshness ≤4, size sanity folded into quality.
-  // The displacement-creation bonus lives in STRUCTURE only — no double count.
   const entry = Math.min(
     20,
-    Math.round((zoneKind === "FVG" ? 8 : 6) + zoneQuality * 4 + (zoneFresh ? 4 : 2) + (zoneQuality >= 0.8 ? 4 : 2))
+    Math.round((zoneKind === "FVG+OB" ? 10 : zoneKind === "FVG" ? 8 : 6) + zoneQuality * 4 + (zoneFresh ? 4 : 2) + (zoneQuality >= 0.8 ? 2 : 0))
   );
 
   // CONFIRMATION (cap 10): SMT ≤5, kill zone ≤3, sweep inside KZ ≤2
