@@ -151,3 +151,18 @@ Stage Summary:
 - Model C/OB still nearly zero-trades (NO_ORDER_BLOCK window rejections now VISIBLE per model); not tuned — funnel shows the constraint honestly.
 - Expiry diagnostics show 26/93 expired orders touched AFTER the window; median closest approach 0.12R on deep run.
 - Deep runs take ~50s first call (fetch+compute) then cached; Workers CPU limit is the deployment-side risk for 25000 bars.
+
+---
+Task ID: 10
+Agent: Super Z (main agent)
+Task: Review post-P0 deployed terminal (4 new screenshots, 15000-deep + 5000 runs, 3 ambiguity modes) and answer "what should we improve".
+
+Work Log:
+- Sliced 4 full-page captures (15770/15620/12891px) into 58 readable bands; read funnel, rejections, models, RR/session, pending-order, inspector, WF/MC, losers, MFE/MAE, sessions, scores, management, data-quality, trades table.
+- Verified P0 fixes live: weekend audit (2711 dropped, 0 dupes, 14 expected reopen gaps), time-axis equity +6.7R with markers, cost column + 44% warning banner, model-conditional zone rejections, pending-order telemetry (127/48/66/13/21, closest 0.12R, collisions 4), SMT greyed N/A.
+- Found deep-fetch instability: same "15000 deep" selector previously returned 10952 weekday bars/69 trades (OOS +5.15R), now 7289 bars/48 trades (OOS -1.67R) — silent shortfall ~10000 raw bars vs 15000 requested; OOS sign flipped between runs.
+- Identified ambiguity modes nearly no-op on deep window (4 collisions; pessimistic vs ltf identical outcomes) but UI gives no affected-trade context; Randomized 5000 run differs materially (23 trades, 65.2% WR).
+- Key economics found: costs 5.34R of 12.01R gross (44%); off-session -3.2R vs asia +8.5R; TP3 hit 2.08% while median available RR 23.19R (unreachable farthest-level ladder makes minRR gate non-binding 372/396); 84% of losers never reached +0.5R MFE; fill plateau 37.8% by bar 12; OB creation still 42/13984 (0.58%) so Model C 1 trade / D 0; "no-smt 100% of losers" attribution row is noise when SMT is N/A; GREEN banner hides negative OOS period.
+
+Stage Summary:
+- P1 improvement plan delivered: (1) deep-fetch accounting + shortfall warning (sample instability flipped OOS sign), (2) cost-aware setup gate / configurable cost model, (3) entry-placement experiments (tolerance fill, proximal-edge anchor, expiry sweep) — 84% of losers never see +0.5R, (4) target-ladder realism (TP3 2% hit, 23R median RR), (5) OB creation sub-funnel, (6) banner honesty re negative OOS, (7) suppress no-smt loser-attribution when SMT N/A, (8) ambiguity affected-trades context.
