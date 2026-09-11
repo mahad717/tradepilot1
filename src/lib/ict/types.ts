@@ -138,6 +138,8 @@ export interface SmtResult {
   goldSource: DataSource;
   silverSource: DataSource;
   note: string;
+  /** what the second series actually is (e.g. "AUD/USD (gold-proxy FX)" or "XAG/USD") */
+  companionLabel?: string;
 }
 
 // ---------------------------------------------------------------------------

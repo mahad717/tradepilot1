@@ -1,11 +1,15 @@
-// SMT (Smart Money Technique) divergence — XAU vs XAG correlation study.
+// SMT (Smart Money Technique) divergence — live correlation study.
 //
-// When gold and silver, which normally move in lockstep, disagree at a
-// structural swing (one prints a higher high while the other fails to),
-// it suggests one market is being used for liquidity rather than genuine
-// repricing — an ICT convergence signal.
+// When two correlated instruments (canonical metals pair: gold and silver)
+// disagree at a structural swing (one prints a higher high while the other
+// fails to), it suggests one market is being used for liquidity rather than
+// genuine repricing — an ICT convergence signal.
+//
+// Companion priority: AUD/USD (LIVE on the free TwelveData plan, 15m return
+// correlation vs gold ≈ 0.55) → XAG/USD (canonical, paid plan only →
+// SIMULATED series, labelled illustrative).
 import "server-only";
-import { getCandles } from "@/lib/market";
+import { getCandles, getCompanionCandles, SMT_COMPANIONS } from "@/lib/market";
 import type { DataSource, IntervalKey, SymbolKey } from "@/lib/market/types";
 import type { Candle, SmtDivergence, SmtResult } from "./types";
 import { findSwings } from "./swings";
@@ -22,23 +26,32 @@ export async function computeSmt(
   maxDivergences = 4
 ): Promise<SmtResult> {
   const gold = await getCandles("XAUUSD" as SymbolKey, interval, outputsize);
-  const silver = await getCandles("XAGUSD" as SymbolKey, interval, outputsize);
+  // prefer the LIVE companion; fall back to (simulated) silver — both labelled
+  const comp = await getCompanionCandles("XAUUSD", interval, outputsize).catch(() => null);
+  const compUsable = comp && !comp.error && comp.candles.length > 40 ? comp : null;
+  const silver = compUsable
+    ? { candles: compUsable.candles, source: "LIVE" as DataSource }
+    : await getCandles("XAGUSD" as SymbolKey, interval, outputsize);
+  const compName = compUsable ? "AUD/USD" : "silver";
 
-  const divergences = findDivergences(gold.candles, silver.candles);
+  const divergences = findDivergences(gold.candles, silver.candles, compName);
   const silverSource: DataSource = silver.source;
 
   return {
     divergences: divergences.slice(-maxDivergences),
     goldSource: gold.source,
     silverSource,
+    companionLabel: compUsable ? SMT_COMPANIONS.XAUUSD.label : "XAG/USD (simulated)",
     note:
-      silverSource === "SIMULATED"
-        ? "Silver data is currently SIMULATED (XAG/USD requires a TwelveData paid plan). SMT results are illustrative until live silver data is enabled."
-        : "Live gold and silver feeds.",
+      compUsable && silverSource === "LIVE"
+        ? `Live gold vs ${compName} (gold-proxy FX, 15m return correlation ≈ 0.55). Silver (XAG/USD) needs a paid TwelveData plan — AUD/USD is the strongest live companion available.`
+        : silverSource === "SIMULATED"
+          ? "The second series is SIMULATED (XAG/USD requires a TwelveData paid plan and the AUD/USD companion was unavailable). SMT results are illustrative until a live companion is fetchable."
+          : "Live gold and silver feeds.",
   };
 }
 
-export function findDivergences(gold: Candle[], silver: Candle[]): SmtDivergence[] {
+export function findDivergences(gold: Candle[], silver: Candle[], compName = "silver"): SmtDivergence[] {
   if (gold.length < 40 || silver.length < 40) return [];
 
   // align on time intersection
@@ -87,8 +100,8 @@ export function findDivergences(gold: Candle[], silver: Candle[]): SmtDivergence
         windowStart: Math.min(g1.time, s1.time),
         windowEnd: Math.max(g2.time, s2.time),
         goldDescription: `gold ${goldHH ? "higher high" : "lower high"} at ${g2.price.toFixed(2)}`,
-        silverDescription: `silver ${silverHH ? "higher high" : "lower high"} at ${s2.price.toFixed(2)}`,
-        detail: `At the swing-high window, gold printed a ${goldHH ? "higher" : "lower"} high while silver printed a ${silverHH ? "higher" : "lower"} high — one market failed to confirm. Classically read as buyside liquidity being taken in the leading market before a pullback.`,
+        silverDescription: `${compName} ${silverHH ? "higher high" : "lower high"} at ${s2.price.toFixed(2)}`,
+        detail: `At the swing-high window, gold printed a ${goldHH ? "higher" : "lower"} high while ${compName} printed a ${silverHH ? "higher" : "lower"} high — one market failed to confirm. Classically read as buyside liquidity being taken in the leading market before a pullback.`,
       });
     }
 
@@ -100,8 +113,8 @@ export function findDivergences(gold: Candle[], silver: Candle[]): SmtDivergence
         windowStart: Math.min(g1.time, s1.time),
         windowEnd: Math.max(g2.time, s2.time),
         goldDescription: `gold ${goldLL ? "lower low" : "higher low"} at ${g2.price.toFixed(2)}`,
-        silverDescription: `silver ${silverLL ? "lower low" : "higher low"} at ${s2.price.toFixed(2)}`,
-        detail: `At the swing-low window, gold printed a ${goldLL ? "lower" : "higher"} low while silver printed a ${silverLL ? "lower" : "higher"} low — a failure to confirm. Classically read as sellside liquidity being taken before a reversal higher.`,
+        silverDescription: `${compName} ${silverLL ? "lower low" : "higher low"} at ${s2.price.toFixed(2)}`,
+        detail: `At the swing-low window, gold printed a ${goldLL ? "lower" : "higher"} low while ${compName} printed a ${silverLL ? "lower" : "higher"} low — a failure to confirm. Classically read as sellside liquidity being taken before a reversal higher.`,
       });
     }
   };

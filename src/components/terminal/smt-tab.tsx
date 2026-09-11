@@ -116,7 +116,7 @@ export function SmtTab({ interval }: { interval: string }) {
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant="outline" className="border-border text-muted-foreground">XAU {result.goldSource}</Badge>
         <Badge variant="outline" className={result.silverSource === "LIVE" ? "border-emerald-800 text-emerald-400" : "border-amber-700 text-amber-400"}>
-          XAG {result.silverSource}
+          {result.companionLabel ?? "XAG"} {result.silverSource}
         </Badge>
         <span className="text-xs text-muted-foreground">{result.note}</span>
       </div>

@@ -245,6 +245,8 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [entryAnchor, setEntryAnchor] = useState("edge");
   const [entryTolerance, setEntryTolerance] = useState("0");
   const [costGate, setCostGate] = useState("0.35");
+  const [obInvalidation, setObInvalidation] = useState("close-mid");
+  const [tierB, setTierB] = useState("70");
   const [sessions, setSessions] = useState("");
   const [strictness, setStrictness] = useState("balanced");
   const [sensitivity, setSensitivity] = useState(false);
@@ -275,6 +277,8 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         entryAnchor,
         entryTolerance: entryTolerance,
         costGate,
+        obInvalidation,
+        tierB,
         sessions,
         strictness,
       });
@@ -406,7 +410,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </select>
         </div>
         <div>
-          <label htmlFor="bt-tol" className="mb-1 block text-xs text-muted-foreground" title="Marketable last-look: fill when price comes within this many R of the limit without touching it. Tolerance fills are counted, never hidden.">Entry tolerance</label>
+          <label htmlFor="bt-tol" className="mb-1 block text-xs text-muted-foreground" title="Marketable last-look: fill when price comes within this many R of the limit without touching it. Tolerance fills are counted, never hidden. Strict touch is the honest default — tolerance materially changes results (compare → Entry placement quantifies it).">Entry tolerance</label>
           <select id="bt-tol" value={entryTolerance} onChange={(e) => setEntryTolerance(e.target.value)} className={selectCls}>
             <option value="0">Strict touch</option>
             <option value="0.05">+0.05R</option>
@@ -420,6 +424,23 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <option value="0.25">25% of 1R</option>
             <option value="0.35">35% of 1R</option>
             <option value="0.5">50% of 1R</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bt-obi" className="mb-1 block text-xs text-muted-foreground" title="When a tapped order block stops being tradable. Default is the ICT close-through-midpoint rule — the compare dimension obInvalidation runs all four rules side by side.">OB invalidation</label>
+          <select id="bt-obi" value={obInvalidation} onChange={(e) => setObInvalidation(e.target.value)} className={selectCls}>
+            <option value="close-mid">Close thru midpoint</option>
+            <option value="wick-mid">Wick thru midpoint</option>
+            <option value="close-distal">Close thru zone</option>
+            <option value="wick-distal">Wick thru zone</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bt-tierb" className="mb-1 block text-xs text-muted-foreground" title="Minimum setup score allowed to trade (tier B floor). 70 = engine default. Raising it trades less — check the score-bucket table for what each floor would have excluded.">Min score (B floor)</label>
+          <select id="bt-tierb" value={tierB} onChange={(e) => setTierB(e.target.value)} className={selectCls}>
+            <option value="70">70 (default)</option>
+            <option value="75">75</option>
+            <option value="80">80</option>
           </select>
         </div>
         <label className="flex items-center gap-2 pb-2 text-xs text-muted-foreground">
@@ -438,6 +459,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               <option value="expiry">Expiry window (6/12/24)</option>
               <option value="sessions">Sessions (all vs kill zones)</option>
               <option value="entry">Entry placement (edge/tolerance/midpoint)</option>
+              <option value="obInvalidation">OB invalidation rule (4 modes)</option>
             </select>
           </div>
         )}
@@ -525,13 +547,13 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           >
             <div className="space-y-2">
               {result.funnel.map((f) => {
-                const smtBlocked = f.stage === "SMT confirmation" && result.silverSource !== "LIVE";
+                const smtBlocked = f.stage === "SMT confirmation" && result.smt?.source !== "LIVE";
                 return (
                   <div key={f.stage} className={smtBlocked ? "opacity-50" : undefined}>
                     <div className="flex justify-between text-xs">
                       <span className="text-muted-foreground">
                         {f.stage} <span className="ml-1 rounded bg-muted/60 px-1 text-[10px] uppercase">{f.unit}</span>
-                        {smtBlocked && <span className="ml-2 text-[10px] italic">N/A — silver feed {result.silverSource}; Model E cannot run</span>}
+                        {smtBlocked && <span className="ml-2 text-[10px] italic">N/A — companion feed {result.smt?.source ?? "unavailable"}; divergence confluence cannot run</span>}
                       </span>
                       <span className="font-mono">{f.count} <span className="text-muted-foreground">{f.pct}%</span></span>
                     </div>
@@ -713,12 +735,12 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
 
           {/* ---------------- order-block creation pipeline (Model C/D diagnosis) ---------------- */}
           <Section
-            title="Order-Block pipeline — where Model C/D candidates die"
+            title={`Order-Block pipeline — where Model C/D candidates die (rule: ${result.obInvalidation})`}
             subtitle="Series-wide creation → candidate-window visibility → skip reasons. Diagnoses WHY OB reversals are rare before anyone touches a threshold."
           >
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
               <div className={metricCard} title="OB zones the detector created over the whole series (displacement-qualified opposing candles)"><p className="text-[10px] text-muted-foreground">OBs created</p><p className="font-bold">{result.obPipeline.zonesCreated}</p></div>
-              <div className={metricCard} title="Of those, later invalidated by a CLOSE through the zone midpoint"><p className="text-[10px] text-muted-foreground">Invalidated</p><p className="font-bold">{result.obPipeline.zonesInvalidated}</p></div>
+              <div className={metricCard} title={`Of those, later invalidated under the active rule (${result.obInvalidation}) — compare dimension obInvalidation runs all four rules on the same data`}><p className="text-[10px] text-muted-foreground">Invalidated</p><p className="font-bold">{result.obPipeline.zonesInvalidated}</p></div>
               <div className={metricCard} title="OBs that fell inside some candidate's sweep→MSS zone window"><p className="text-[10px] text-muted-foreground">In candidate windows</p><p className="font-bold">{result.obPipeline.windowSeen}</p></div>
               <div className={metricCard} title="Skipped: mitigated / consumed before the candidate could use them"><p className="text-[10px] text-muted-foreground">Skip: mitigated</p><p className="font-bold">{result.obPipeline.skippedMitigated}</p></div>
               <div className={metricCard} title="Skipped: the limit would cross current price (zone already consumed)"><p className="text-[10px] text-muted-foreground">Skip: consumed</p><p className="font-bold">{result.obPipeline.skippedPosition}</p></div>
@@ -727,6 +749,20 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               <div className={metricCard} title="Model C setups that passed every gate"><p className="text-[10px] text-muted-foreground">Model C valid</p><p className="font-bold">{result.obPipeline.modelCValidSetups}</p></div>
             </div>
             <p className="mt-2 text-[11px] text-muted-foreground">{result.obPipeline.note}</p>
+          </Section>
+
+          {/* ---------------- SMT companion transparency ---------------- */}
+          <Section
+            title="SMT companion — what divergence checks actually ran against"
+            subtitle="SMT is an OPTIONAL confluence: when no live companion exists its score bonus is silently absent, so the run states which series was used, how many divergences fired and how much of the window they covered. A proxy with weaker correlation (r≈0.55) diverges more often than the canonical XAU/XAG pair — treat its bonus as weak confluence, and judge it via the score-bucket table."
+          >
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className={metricCard}><p className="text-[10px] text-muted-foreground">Companion</p><p className="text-sm font-bold">{result.smt?.companion ?? "None"}</p></div>
+              <div className={metricCard} title="LIVE = real market data; anything else means the divergence confluence is not evidence-based on this run"><p className="text-[10px] text-muted-foreground">Data source</p><p className={`text-sm font-bold ${result.smt?.source === "LIVE" ? "text-emerald-400" : "text-amber-400"}`}>{result.smt?.source ?? "unavailable"}</p></div>
+              <div className={metricCard} title="Divergence events that became knowable inside the window (both swings confirmed — no look-ahead)"><p className="text-[10px] text-muted-foreground">Divergences</p><p className="font-bold">{result.smt?.events ?? 0}</p></div>
+              <div className={metricCard} title="Share of traded bars whose timestamp has companion data — low coverage means SMT only judged the tail of the window"><p className="text-[10px] text-muted-foreground">Coverage</p><p className="font-bold">{result.smt?.coveragePct === null || result.smt?.coveragePct === undefined ? "—" : `${result.smt.coveragePct}%`}</p></div>
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">{result.smt?.note}</p>
           </Section>
 
           {/* ---------------- pending-order flow: why orders don't fill ---------------- */}

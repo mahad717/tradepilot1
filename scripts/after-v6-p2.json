@@ -1,0 +1,32 @@
+{
+  "engine": "v6 — P2 batch: OB-invalidation experiment + live SMT companion (AUD/USD) + tier-floor gate",
+  "date": "2026-09-12",
+  "window_5000_xauusd_15m_balanced": {
+    "trades": 25, "winRate": 64.0, "expectancyR": 0.08, "profitFactor": 1.34, "netR": 1.95,
+    "smt": { "companion": "AUD/USD (gold-proxy FX)", "source": "LIVE", "events": 377, "coveragePct": 100 },
+    "smtFunnelRow": { "stage": "SMT confirmation", "count": 108, "pct": 2.91, "unit": "candidates" },
+    "v5_baseline": { "trades": 24, "netR": 1.92, "profitFactor": 1.33 }
+  },
+  "window_deep15000_xauusd_15m_balanced": {
+    "receivedBars": 10952, "requested": 15000, "rawFetched": 15000, "shortfallPct": 0,
+    "trades": 82, "winRate": 63.4, "expectancyR": 0.27, "profitFactor": 3.36, "netR": 21.78,
+    "smt": { "companion": "AUD/USD (gold-proxy FX)", "source": "LIVE", "events": 1096, "coveragePct": 100 },
+    "v5_baseline": { "trades": 72, "netR": 17.12, "profitFactor": 2.87 },
+    "note": "Trade-count shift 72→82 is the SMT +5 optional-confluence bonus finally running on LIVE data (was silently absent); no return-based parameter was touched."
+  },
+  "ob_invalidation_compare": {
+    "dimension": "obInvalidation",
+    "result": "all four rules (close-mid / wick-mid / close-distal / wick-distal) produced IDENTICAL trade sets on both 5000b and deep windows",
+    "interpretation": "Model C=2, Model D=0 of ~72-82 trades — the 95% close-through-midpoint invalidation rate is NOT the OB bottleneck; scarcity is upstream (creation 0.58% + window placement). Hypothesis tested and closed; dimension kept as a guard for future OB-detector work.",
+    "caveat": "compare executed pre SMT-pairing-fix; conclusion is structural (FVG-based Model B dominates) and unaffected by SMT pairing"
+  },
+  "smt_pairing_bugfix": {
+    "found": "index-pairing (k-th base swing vs k-th companion swing) drifted >10,000 bars on deep windows (1500 vs 478 swing highs) — contemporaneity gate rejected 100% of pairs, SMT silently dead (0 events despite 66% coverage)",
+    "fixed": "time-proximity pairing: each base swing matches the nearest same-type companion swing within 8 bars; HH/LH measured against each series' OWN previous swing",
+    "validation": "self-test #20 (causal stamping) + deep run: 0 → 1096 events at 100% coverage"
+  },
+  "selftest": "20/20 pass",
+  "typescript": "clean (tsc --noEmit, excluding pre-existing unrelated errors)",
+  "eslint": "clean on all touched files",
+  "twelvedata_daily_cap": "812/800 credits burned during verification — later runs honestly degrade (companion error surfaced in note; base fetch 502 as before)"
+}

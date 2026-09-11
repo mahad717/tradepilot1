@@ -12,7 +12,8 @@ const BE_MODES = ["off", "tp1", "risk1", "structural"];
 const AMBIGUITY_MODES = ["pessimistic", "optimistic", "randomized", "ltf"];
 const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
 const STRICTNESS_LEVELS = ["conservative", "balanced", "aggressive"];
-const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry"];
+const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "obInvalidation"];
+const OB_INVALIDATION_MODES = ["close-mid", "wick-mid", "close-distal", "wick-distal"];
 
 /**
  * Persistence features need a database (D1 on Cloudflare, SQLite locally).
@@ -47,6 +48,8 @@ export async function GET(req: Request) {
   const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0");
   const costGateParam = Number(searchParams.get("costGate") ?? "0.35");
   const horizonParam = Number(searchParams.get("horizon") ?? "8");
+  const obInvalidationParam = searchParams.get("obInvalidation") ?? "close-mid";
+  const tierBParam = Number(searchParams.get("tierB") ?? "70");
   const compare = searchParams.get("compare") === "1";
   const compareDimParam = searchParams.get("compareDim") ?? "strictness";
   const sensitivityParam = searchParams.get("sensitivity") ?? "";
@@ -73,7 +76,13 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unknown strictness preset" }, { status: 400 });
   }
   if (!COMPARE_DIMENSIONS.includes(compareDimParam)) {
-    return NextResponse.json({ error: "Unknown compareDim (strictness|expiry|sessions|entry)" }, { status: 400 });
+    return NextResponse.json({ error: "Unknown compareDim (strictness|expiry|sessions|entry|obInvalidation)" }, { status: 400 });
+  }
+  if (!OB_INVALIDATION_MODES.includes(obInvalidationParam)) {
+    return NextResponse.json({ error: "obInvalidation must be close-mid|wick-mid|close-distal|wick-distal" }, { status: 400 });
+  }
+  if (!Number.isFinite(tierBParam) || tierBParam < 60 || tierBParam > 90) {
+    return NextResponse.json({ error: "tierB must be between 60 and 90" }, { status: 400 });
   }
   if (entryAnchorParam !== "edge" && entryAnchorParam !== "midpoint") {
     return NextResponse.json({ error: "entryAnchor must be edge|midpoint" }, { status: 400 });
@@ -109,6 +118,8 @@ export async function GET(req: Request) {
         entryToleranceR: entryToleranceParam,
         maxCostPctOfR: costGateParam,
         targetHorizonR: horizonParam,
+        obInvalidation: obInvalidationParam as never,
+        tierB: tierBParam,
       },
     });
 
@@ -124,7 +135,7 @@ export async function GET(req: Request) {
         const r =
           rr === minRR
             ? result
-            : await runBacktest({ symbol, interval, bars, strictness, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam } });
+            : await runBacktest({ symbol, interval, bars, strictness, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam, obInvalidation: obInvalidationParam as never, tierB: tierBParam } });
         sensitivity.push({
           minRR: rr,
           trades: r.metrics.trades,
@@ -147,7 +158,7 @@ export async function GET(req: Request) {
           symbol,
           interval,
           bars,
-          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam },
+          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam, obInvalidation: obInvalidationParam as never, tierB: tierBParam },
         },
         dim
       );
@@ -156,7 +167,7 @@ export async function GET(req: Request) {
           symbol,
           interval,
           bars,
-          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam },
+          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam, obInvalidation: obInvalidationParam as never, tierB: tierBParam },
         });
       }
     }

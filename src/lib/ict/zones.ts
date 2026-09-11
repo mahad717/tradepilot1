@@ -2,6 +2,49 @@
 import type { Candle, Zone } from "./types";
 
 /**
+ * OB invalidation rule — WHEN a tapped order block stops being tradable.
+ * The engine ships with the ICT close-through-midpoint rule; the other
+ * modes exist so the definition itself can be COMPARED on real data
+ * (diagnostics found ~95% of OBs die to the default rule — that is a
+ * modeling choice, not a law, and it is now measurable).
+ */
+export type ObInvalidation =
+  | "close-mid" // a CLOSE beyond the zone midpoint (current default)
+  | "wick-mid" // ANY trade beyond the midpoint (strictest)
+  | "close-distal" // a CLOSE beyond the whole zone (classic strict ICT)
+  | "wick-distal"; // ANY trade through the whole zone (loosest)
+
+export const OB_INVALIDATION_LABELS: Record<ObInvalidation, string> = {
+  "close-mid": "close beyond midpoint (default)",
+  "wick-mid": "any trade beyond midpoint",
+  "close-distal": "close beyond the full zone",
+  "wick-distal": "any trade through the full zone",
+};
+
+/** Does this candle kill a BULLISH zone of the given kind under the rule? */
+export function obInvalidated(
+  z: Zone,
+  c: { high: number; low: number; close: number },
+  mode: ObInvalidation
+): boolean {
+  const mid = (z.top + z.bottom) / 2;
+  if (z.direction === "BULLISH") {
+    switch (mode) {
+      case "wick-mid": return c.low < mid;
+      case "close-distal": return c.close < z.bottom;
+      case "wick-distal": return c.low <= z.bottom;
+      default: return c.close < mid; // close-mid
+    }
+  }
+  switch (mode) {
+    case "wick-mid": return c.high > mid;
+    case "close-distal": return c.close > z.top;
+    case "wick-distal": return c.high >= z.top;
+    default: return c.close > mid; // close-mid
+  }
+}
+
+/**
  * Fair Value Gap — three-candle imbalance:
  *   Bullish: low[i] > high[i-2]  → gap between high[i-2] and low[i]
  *   Bearish: high[i] < low[i-2]  → gap between low[i-2] and high[i]
@@ -71,8 +114,9 @@ export function detectFvg(candles: Candle[], maxZones = 8, includeMitigated = fa
  * zone becomes knowable when that candle closes) — a single series-wide
  * scalar both misjudges regimes and subtly leaks future information.
  *
- * Invalidation: a candle CLOSING beyond the zone midpoint (ICT invalidation).
- * A wick tap is the retest we want to trade — it must NOT kill the block.
+ * Invalidation: configurable via `mode` — default is a candle CLOSING
+ * beyond the zone midpoint (ICT). A wick tap is the retest we want to
+ * trade — under the default rule it must NOT kill the block.
  * Same look-ahead caveat as detectFvg — use includeMitigated for walk-forward.
  */
 export function detectOrderBlocks(
@@ -80,7 +124,8 @@ export function detectOrderBlocks(
   atrValues: number[] | number,
   displacementFactor = 1.2,
   maxZones = 6,
-  includeMitigated = false
+  includeMitigated = false,
+  mode: ObInvalidation = "close-mid"
 ): Zone[] {
   const zones: Zone[] = [];
   const atrAt = (i: number) => (Array.isArray(atrValues) ? atrValues[i] : atrValues) ?? 0;
@@ -122,17 +167,10 @@ export function detectOrderBlocks(
     }
   }
 
-  // invalidation: a candle CLOSING through the zone midpoint (ICT).
-  // Wick touches are retests (potential entry fills), not invalidation.
+  // invalidation: rule-configurable (default = CLOSE through the midpoint).
   for (const z of zones) {
     for (let i = z.startIndex + 2; i < candles.length; i++) {
-      const c = candles[i];
-      const mid = (z.top + z.bottom) / 2;
-      if (z.direction === "BULLISH" && c.close < mid) {
-        z.mitigated = true;
-        break;
-      }
-      if (z.direction === "BEARISH" && c.close > mid) {
+      if (obInvalidated(z, candles[i], mode)) {
         z.mitigated = true;
         break;
       }

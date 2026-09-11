@@ -39,6 +39,7 @@ import { runMonteCarlo, type MonteCarloResult } from "./montecarlo";
 import { walkForward, type WalkForwardResult } from "./walkforward";
 import { smtSeries, type SmtEvent } from "./smtseries";
 import { DEFAULT_COSTS, describeCosts } from "./costs";
+import { getCompanionCandles } from "@/lib/market";
 import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary, ObPipeline } from "./types";
 import type { Candle } from "@/lib/market/types";
 
@@ -50,6 +51,17 @@ export interface BacktestResult {
   to: number;
   source: string;
   silverSource: string;
+  /** SMT companion state — which correlated series drove divergence checks */
+  smt: {
+    /** companion label, null when no companion was usable */
+    companion: string | null;
+    source: string;
+    /** divergence events that became knowable inside the window */
+    events: number;
+    /** share of traded bars whose timestamp has companion data (null = no companion) */
+    coveragePct: number | null;
+    note: string;
+  };
   metrics: ReturnType<typeof computeMetrics>;
   sampleInfo: { category: SampleCategory; label: string; note: string };
   equityCurve: { time: number; r: number }[];
@@ -66,6 +78,8 @@ export interface BacktestResult {
   ambiguityCollisions: number;
   /** where Order-Block candidates actually die (Model C/D diagnosis) */
   obPipeline: ObPipeline;
+  /** active OB invalidation rule (compare dimension "obInvalidation") */
+  obInvalidation: string;
   /** requested vs actually-fetched history (deep windows can fall short) */
   fetch: { requested: number; receivedRaw: number; requests: number; shortfallPct: number; deep: boolean };
   strictness: Strictness;
@@ -93,6 +107,8 @@ export interface BacktestResult {
     maxCostPctOfR: number;
     targetHorizonR: number;
     orderExpiryBars: number;
+    obInvalidation: string;
+    tierB: number;
   };
   notes: string[];
 }
@@ -199,20 +215,31 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     dataQuality.note += ` WARNING: requested ${fetch.requested} bars but the upstream delivered only ${fetch.receivedRaw} raw (${fetch.shortfallPct}% shortfall over ${fetch.requests} chunk requests) — this window is SMALLER than the selector promises; runs are only comparable at equal received bars.`;
   }
 
-  // silver for SMT confirmation (optional — simulated silver is labelled)
-  let silver: Candle[] = [];
-  let silverSource = "unavailable";
-  if (opts.includeSilverForSmt !== false && cfg.models.includes("E_SMT_REVERSAL")) {
-    try {
-      const res = await getCandles("XAGUSD", interval, Math.min(bars, 5000));
-      silver = dropWeekendCandles(res.candles).candles;
-      silverSource = res.source;
-    } catch {
-      silver = [];
-    }
+  // SMT companion (optional): the correlated second series SMT compares
+  // against. Live companion → real divergence confluence; unavailable → SMT
+  // score bonus is silently absent, which the run now states explicitly.
+  const companion = fetchRes.source === "LIVE" ? await getCompanionCandles(symbol, interval, bars) : null;
+  const companionFailed = !!companion?.error;
+  const companionCandles = companion && !companion.error ? dropWeekendCandles(companion.candles).candles : [];
+  const smtEvents: SmtEvent[] = companionCandles.length > 40 ? smtSeries(candles, companionCandles) : [];
+  const companionTimeSet = new Set(companionCandles.map((c) => c.time));
+  const smtCoveragePct = companion && !companion.error
+    ? Math.round((candles.filter((c) => companionTimeSet.has(c.time)).length / Math.max(1, candles.length)) * 1000) / 10
+    : null;
+  const smt = {
+    companion: companion && !companion.error ? companion.label : null,
+    source: companion && !companion.error ? companion.source : (fetchRes.source !== "LIVE" ? "unavailable (simulated base series)" : "unavailable"),
+    events: smtEvents.length,
+    coveragePct: smtCoveragePct,
+    note: companionFailed
+      ? `SMT companion fetch failed (${companion!.error}) — SMT confluence contributes nothing on this run. This is often a transient credit/rate limit; retry shortly.`
+      : companion?.note ?? (fetchRes.source !== "LIVE"
+        ? "The traded series is simulated — pairing it with a live companion would fabricate divergences, so SMT is disabled on this run."
+        : "No SMT companion was fetchable — SMT confluence contributes nothing on this run."),
+  };
+  if (smtCoveragePct !== null && smtCoveragePct < 60) {
+    smt.note += ` WARNING: companion data covers only ${smtCoveragePct}% of the traded window (upstream returned a partial series) — divergence confluence was judged on the covered part only; runs at different coverage are not comparable.`;
   }
-
-  const smtEvents = silver.length > 40 ? smtSeries(candles, silver) : [];
 
   // lower-timeframe data for the "ltf" candle-ambiguity model (spec #29)
   let ltfCandles: Candle[] | undefined;
@@ -229,8 +256,11 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     }
   }
 
+  // legacy field name kept for UI/API compat — now reflects the SMT companion
+  const silverSource = companion && !companion.error ? companion.source : "unavailable";
   const result = runBacktestCore(symbol, interval, candles, smtEvents, cfg, fetchRes.source, silverSource, ltfCandles, ltfSeconds, strictness, dataQuality);
   result.fetch = fetch; // caller-side accounting overrides the core default
+  result.smt = smt;
   return result;
 }
 
@@ -261,7 +291,7 @@ export function runBacktestCore(
   strictness: Strictness = "balanced",
   dataQuality?: DataQuality
 ): BacktestResult {
-  const ctx = buildSeriesContext(symbol, interval, candles, smtEvents);
+  const ctx = buildSeriesContext(symbol, interval, candles, smtEvents, cfg.obInvalidation);
   const execute: ExecuteConfig = {
     beMode: cfg.beMode,
     beTriggerR: cfg.beTriggerR,
@@ -356,6 +386,7 @@ export function runBacktestCore(
       ? `Execution-cost gate: ON — setups whose estimated round-trip cost exceeds ${(cfg.maxCostPctOfR * 100).toFixed(0)}% of 1R are declined (${ctx.diag.costRejected} rejected at the gate).`
       : "Execution-cost gate: OFF — every setup is evaluated regardless of its cost share of 1R.",
     `Entry: limit at the zone ${cfg.entryAnchor === "midpoint" ? "MIDPOINT (deeper fill, worse location)" : "proximal EDGE (ICT default)"}${cfg.entryToleranceR > 0 ? `, tolerance +${cfg.entryToleranceR}R (marketable last-look)` : ", strict touch (no tolerance)"}.`,
+    `OB invalidation rule: ${cfg.obInvalidation} — see the compare dimension for all four rules on the same data.`,
     `Target horizon: execution ladder capped at ${cfg.targetHorizonR}R — farther structural levels are landmarks for the RR landmark view, not tradable targets.`,
     `Same-candle SL/TP ambiguity: ${cfg.ambiguity} model. Pessimistic assumes the stop fills first.`,
     `Sessions traded: ${cfg.sessions.length ? cfg.sessions.join(", ") : "ALL (kill zone is a score confluence)"}. Volatility blocks: ${cfg.blockedVolRegimes.join(", ") || "none"}. UNCLEAR market regime → NO TRADE.`,
@@ -364,10 +395,8 @@ export function runBacktestCore(
     `Same-candle SL+TP collisions: ${ambiguityCollisions}.${ambiguityCollisions === 0 ? " The ambiguity model had no effect on this run." : ""}`,
     `Weekend candles dropped before the run: ${dq.weekendCandles} (spot metals feeds quote through closed weekends — ICT sessions must not fire there).`,
     silverSource === "SIMULATED"
-      ? "Silver feed is SIMULATED — SMT confirmation is illustrative only on this run."
-      : silverSource === "unavailable"
-        ? "Silver feed unavailable — SMT confirmation disabled for this run."
-        : "Live silver feed used for SMT confirmation.",
+      ? "Companion feed is SIMULATED — SMT confirmation is illustrative only on this run."
+      : "See the SMT companion panel for the divergence source, event count and coverage.",
     "Rule-based historical study for strategy evaluation only — past performance does not guarantee future results. Never describe a small sample as statistically reliable.",
   ];
 
@@ -386,6 +415,15 @@ export function runBacktestCore(
     note: obPipelineNote(ctx.diag),
   };
 
+  // core default (pure runs have no companion I/O) — the public runner overrides
+  const smt = {
+    companion: null as string | null,
+    source: "unavailable",
+    events: 0,
+    coveragePct: null as number | null,
+    note: "Pure core run — no SMT companion was fetched.",
+  };
+
   return {
     symbol,
     interval,
@@ -394,6 +432,7 @@ export function runBacktestCore(
     to: candles[candles.length - 1]?.time ?? 0,
     source,
     silverSource,
+    smt,
     metrics,
     sampleInfo: { category: cat, label: SAMPLE_CATEGORIES[cat].label, note: SAMPLE_CATEGORIES[cat].note },
     equityCurve,
@@ -408,6 +447,7 @@ export function runBacktestCore(
     orderFlow: summarizeOrderFlow(pendingTelemetry, cfg.orderExpiryBars),
     ambiguityCollisions,
     obPipeline,
+    obInvalidation: cfg.obInvalidation,
     fetch: { requested: candles.length, receivedRaw: candles.length, requests: 0, shortfallPct: 0, deep: false },
     strictness,
     strictnessNote: STRICTNESS_PRESETS[strictness],
@@ -434,6 +474,8 @@ export function runBacktestCore(
       maxCostPctOfR: cfg.maxCostPctOfR,
       targetHorizonR: cfg.targetHorizonR,
       orderExpiryBars: cfg.orderExpiryBars,
+      obInvalidation: cfg.obInvalidation,
+      tierB: cfg.tierB,
     },
     notes,
   };
@@ -446,7 +488,7 @@ function obPipelineNote(diag: import("./sequence").DiagSink): string {
     return "No order blocks were created in this window at all — the displacement requirement (body ≥ 1.2 × per-bar ATR with opposing direction) never fired; the detector, not the window, is the bottleneck.";
   }
   const parts: string[] = [
-    `${diag.obZonesCreated} OBs created series-wide (${diag.obZonesInvalidated} later invalidated by a close through midpoint)`,
+    `${diag.obZonesCreated} OBs created series-wide (${diag.obZonesInvalidated} later invalidated)`,
   ];
   if (diag.obWindowSeen === 0) {
     parts.push("NONE fell inside a candidate's sweep→MSS window — the sequence window, not OB quality, is the bottleneck");
@@ -564,7 +606,7 @@ export async function compareStrictness(
 // costs, entry placement and target realism.
 // ---------------------------------------------------------------------------
 
-export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry";
+export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry" | "obInvalidation";
 
 export interface DimensionRow {
   label: string;
@@ -630,6 +672,17 @@ export async function compareDimension(
       run("Edge + strict", "limit at the proximal edge, no tolerance (current default)", { entryAnchor: "edge", entryToleranceR: 0 }),
       run("Edge + 0.05R tolerance", "marketable last-look within 0.05R of the edge limit", { entryAnchor: "edge", entryToleranceR: 0.05 }),
       run("Midpoint + strict", "limit at the zone midpoint — deeper fill, worse location", { entryAnchor: "midpoint", entryToleranceR: 0 }),
+    ]);
+    return { dimension, rows };
+  }
+  if (dimension === "obInvalidation") {
+    // The OB definition experiment — when does a tapped order block stop
+    // being tradable? Four rules, same data, reported objectively.
+    const rows = await Promise.all([
+      run("Close through midpoint", "a CLOSE beyond the zone midpoint kills the block (current default)", { obInvalidation: "close-mid" }),
+      run("Wick through midpoint", "ANY trade beyond the midpoint kills the block (strictest)", { obInvalidation: "wick-mid" }),
+      run("Close through full zone", "a CLOSE beyond the whole zone kills the block (classic strict ICT)", { obInvalidation: "close-distal" }),
+      run("Wick through full zone", "ANY trade through the whole zone kills the block (loosest)", { obInvalidation: "wick-distal" }),
     ]);
     return { dimension, rows };
   }

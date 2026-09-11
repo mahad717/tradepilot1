@@ -22,6 +22,7 @@ import { selectTradeTargets } from "./targets";
 import { DEFAULT_CONFIG, buildSeriesContext, buildSetupAt, type EngineConfig, type SeriesContext, type CooldownState } from "./sequence";
 import { resample, htfSecondsFor } from "./htf";
 import { findSwings } from "./swings";
+import { smtSeries } from "./smtseries";
 import { mulberry32 } from "./rng";
 
 export interface TestResult {
@@ -434,6 +435,92 @@ export function runAllTests(): TestResult[] {
       "Time-to-target tracking",
       pass,
       t ? `barsToTp1=${t.barsToTp1} (expect 1 — filled bar 6, TP1 bar 7), barsToTp2=${t.barsToTp2}, barsToTp3=${t.barsToTp3} (expect null)` : "trade did not fill"
+    );
+  }
+
+  // ---- 19. OB invalidation rules (the four modes produce DISTINCT death bars) ----
+  {
+    // bullish OB = bearish candle i1 followed by displacement up candle i2.
+    // zone = [97, 100], midpoint 98.5. Then:
+    //   A(i3): wick below midpoint (98.0), closes 102.5 → kills wick-mid ONLY
+    //   B(i4): wick below zone bottom (96.0), closes 97.5 (mid < close < bottom is false;
+    //          97.5 is between bottom 97 and mid 98.5) → kills wick-distal AND close-mid
+    //   C(i5): closes 96.0 below zone bottom → kills close-distal
+    const rows: [number, number, number, number][] = [
+      [100, 100.5, 99.5, 99.8], // 0 warmup
+      [99.8, 100.0, 97.0, 97.2], // 1 OB bearish candle (zone 97–100)
+      [97.2, 103.0, 97.0, 103.2], // 2 displacement up (body 6.0 ≥ 1.2×ATR≈3.3)
+      [102.0, 103.0, 98.0, 102.5], // 3 A: wick through midpoint only
+      [102.5, 103.0, 96.0, 97.5], // 4 B: wick through bottom, close between bottom and mid
+      [97.5, 98.0, 95.5, 96.0], // 5 C: close through bottom
+    ];
+    const candles = mkCandles(rows);
+    const obTime = candles[1].time;
+    const id = `ob-b-${obTime}`;
+    const deathAt = (mode: EngineConfig["obInvalidation"]) => {
+      const ctx = buildSeriesContext("XAUUSD", "15min", candles, [], mode);
+      return ctx.zoneMitigatedAt.get(id);
+    };
+    const a = deathAt("close-mid");
+    const b = deathAt("wick-mid");
+    const c = deathAt("close-distal");
+    const d = deathAt("wick-distal");
+    const pass = a === 4 && b === 3 && c === 5 && d === 4;
+    add(
+      "OB invalidation rules: four modes, four distinct death bars",
+      pass,
+      `close-mid→${a} (expect 4), wick-mid→${b} (expect 3), close-distal→${c} (expect 5), wick-distal→${d} (expect 4) — zone [97,100], mid 98.5`
+    );
+  }
+
+  // ---- 20. SMT divergence is causal (event only after BOTH swings confirm) ----
+  {
+    // base: swing highs at bars 4 (101.5) and 9 (103.5) → HH.
+    // companion: swing highs at bars 4 (61.0) and 9 (60.2) → LH → BEARISH SMT.
+    // All swing-high bars have STRICTLY higher highs than ±2 neighbors (ties kill pivots).
+    const baseRows: [number, number, number, number][] = [
+      [100, 100.5, 99.5, 100.0], [100, 100.6, 99.6, 100.2],
+      [100.2, 101.0, 100.0, 100.8], [100.8, 101.3, 100.4, 101.0],
+      [101.0, 101.5, 100.8, 101.0], // swing high 1 = 101.5
+      [101.0, 100.9, 100.2, 100.4], [100.4, 100.6, 100.0, 100.2],
+      [100.2, 100.9, 100.1, 100.7], [100.7, 101.4, 100.5, 101.2],
+      [101.2, 103.5, 101.0, 103.2], // swing high 2 = 103.5 (HH)
+      [103.2, 103.0, 102.4, 102.6], [102.6, 102.8, 102.2, 102.4],
+    ];
+    // tail: quiet oscillation, highs stay below 103.5 (no new extreme swings)
+    for (let i = 12; i < 40; i++) {
+      const o = 102.4 + (i % 3) * 0.2;
+      baseRows.push([o, o + 0.4, o - 0.4, o + 0.2]);
+    }
+    const compRows: [number, number, number, number][] = [
+      [50, 50.4, 49.6, 50.0], [50, 50.5, 49.5, 50.2],
+      [50.2, 50.9, 50.0, 50.7], [50.7, 51.2, 50.5, 51.0],
+      [51.0, 61.0, 50.9, 60.5], // swing high 1 = 61.0
+      [60.5, 60.0, 55.0, 55.5], [55.5, 55.8, 54.5, 54.8],
+      [54.8, 55.5, 54.2, 55.0], [55.0, 56.0, 54.8, 55.8],
+      [55.8, 60.2, 55.5, 59.8], // swing high 2 = 60.2 (LH → divergence with base HH)
+      [59.8, 59.5, 58.5, 58.8], [58.8, 59.0, 58.2, 58.5],
+    ];
+    for (let i = 12; i < 40; i++) {
+      const o = 58.4 + (i % 3) * 0.2;
+      compRows.push([o, o + 0.3, o - 0.3, o + 0.1]);
+    }
+    const base = mkCandles(baseRows, 900 * 1000);
+    const comp = mkCandles(compRows, 900 * 1000);
+    const events = smtSeries(base, comp);
+    const bearish = events.filter((e) => e.type === "BEARISH");
+    // a BEARISH event must exist AND be stamped no earlier than the LATER
+    // swing's confirmation (swing time + lookback(2)+1 bars)
+    const high2Time = base[9].time;
+    const spacing = 900;
+    const minKnowTime = high2Time + 3 * spacing;
+    const pass =
+      bearish.length > 0 &&
+      bearish.every((e) => base[e.index].time + spacing >= minKnowTime);
+    add(
+      "SMT divergence: knowable only after both swings confirm",
+      pass,
+      `${bearish.length} BEARISH divergence(s); earliest stamped at bar time ${bearish.length ? base[Math.min(...bearish.map((e) => e.index))].time : "n/a"} (earliest allowed ${minKnowTime - spacing}); detail: ${bearish[0]?.detail ?? "none"}`
     );
   }
 

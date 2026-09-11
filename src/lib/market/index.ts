@@ -125,6 +125,65 @@ export async function getCandlesDeep(
   return { candles, source: "SIMULATED", stale: false, symbol, interval, requests: 0 };
 }
 
+/**
+ * SMT companion — the second, correlated series the SMT divergence check
+ * compares the traded instrument against. Silver (XAG/USD) is the canonical
+ * gold companion but needs a paid TwelveData plan, so XAUUSD falls back to
+ * AUD/USD — the strongest LIVE companion on this plan (15-min return
+ * correlation vs gold ≈ 0.55 over 2000 aligned bars, measured 2026-09).
+ * Silver backtests use live gold (canonical pair, roles inverted).
+ */
+export const SMT_COMPANIONS: Record<SymbolKey, { tdSymbol: string; label: string; note: string }> = {
+  XAUUSD: {
+    tdSymbol: "AUD/USD",
+    label: "AUD/USD (gold-proxy FX)",
+    note: "Silver (XAG/USD) requires a paid TwelveData plan — AUD/USD is used as the live companion proxy (15m return correlation vs gold ≈ 0.55).",
+  },
+  XAGUSD: {
+    tdSymbol: "XAU/USD",
+    label: "XAU/USD (gold)",
+    note: "Canonical metals SMT pair with roles inverted — gold is live on this plan.",
+  },
+};
+
+export interface CompanionResult {
+  candles: Candle[];
+  source: DataSource;
+  label: string;
+  note: string;
+  /** set when the fetch failed — the run must distinguish "throttled" from "impossible" */
+  error?: string;
+}
+
+/**
+ * Fetch the SMT companion series for a traded symbol. Deep windows fetch
+ * the companion from the oldest edge too, so SMT coverage matches the
+ * traded window instead of silently covering only the tail.
+ */
+export async function getCompanionCandles(
+  symbol: SymbolKey,
+  interval: IntervalKey,
+  totalBars: number
+): Promise<CompanionResult | null> {
+  const comp = SMT_COMPANIONS[symbol];
+  try {
+    if (totalBars > 5000) {
+      const { candles } = await fetchCandlesRangeLive(comp.tdSymbol, interval, Math.min(totalBars, 25000));
+      return { candles, source: "LIVE", label: comp.label, note: comp.note };
+    }
+    const { candles } = await fetchCandlesLive(comp.tdSymbol, interval, Math.min(Math.max(totalBars, 50), 5000));
+    return { candles, source: "LIVE", label: comp.label, note: comp.note };
+  } catch (err) {
+    return {
+      candles: [],
+      source: "LIVE",
+      label: comp.label,
+      note: comp.note,
+      error: err instanceof Error ? err.message : "unknown companion fetch failure",
+    };
+  }
+}
+
 export async function getQuotes(): Promise<Record<string, Quote>> {
   const out: Record<string, Quote> = {};
   await Promise.all(

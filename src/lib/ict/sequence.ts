@@ -52,7 +52,7 @@ import type {
 } from "./types";
 import { detectSweeps, detectLiquidityPools } from "./liquidity";
 import { findSwings } from "./swings";
-import { detectFvg, detectOrderBlocks } from "./zones";
+import { detectFvg, detectOrderBlocks, obInvalidated, type ObInvalidation } from "./zones";
 import { roundTripCostR, DEFAULT_COSTS } from "./costs";
 import { structureWalkSeries } from "./structure";
 import { atrSeries, volRegimeSeries } from "./volatility";
@@ -137,6 +137,8 @@ export interface EngineConfig {
   entryToleranceR: number;
   /** execution ladder ignores structural levels farther than this many R */
   targetHorizonR: number;
+  /** when a tapped order block stops being tradable (default: close through midpoint) */
+  obInvalidation: ObInvalidation;
 
   // statistical hygiene
   warmupBars: number;
@@ -203,6 +205,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
   entryAnchor: "edge",
   entryToleranceR: 0,
   targetHorizonR: 8,
+  obInvalidation: "close-mid",
 
   warmupBars: 60,
   rangeLookbackBars: 96,
@@ -438,7 +441,8 @@ export function buildSeriesContext(
   symbol: SymbolKey,
   interval: IntervalKey,
   candles: Candle[],
-  smtEvents: { index: number; type: "BULLISH" | "BEARISH" }[] = []
+  smtEvents: { index: number; type: "BULLISH" | "BEARISH" }[] = [],
+  obInvalidation: ObInvalidation = "close-mid"
 ): SeriesContext {
   const intervalSec = intervalSeconds(interval);
   const atrS = atrSeries(candles, 14);
@@ -449,9 +453,10 @@ export function buildSeriesContext(
 
   // zones (with global mitigation markers consumed causally by index)
   // FVG mitigation = midpoint TOUCH (zone no longer fresh — conservative).
-  // OB invalidation = CLOSE through midpoint (a wick tap is the retest we trade).
+  // OB invalidation = rule-configurable (default: CLOSE through midpoint —
+  // a wick tap is the retest we trade). see zones.ts ObInvalidation.
   const fvgZones = detectFvg(candles, 100000, true);
-  const obZones = detectOrderBlocks(candles, atrS, 1.2, 100000, true);
+  const obZones = detectOrderBlocks(candles, atrS, 1.2, 100000, true, obInvalidation);
   const zones = [...fvgZones, ...obZones];
   const zoneMitigatedAt = new Map<string, number>();
   const zoneCreatedIndex = new Map<string, number>();
@@ -466,19 +471,16 @@ export function buildSeriesContext(
     const mid = (z.top + z.bottom) / 2;
     for (let i = z.startIndex + (isFvg ? 3 : 2); i < candles.length; i++) {
       const c = candles[i];
-      if (z.direction === "BULLISH") {
-        const dead = isFvg ? c.low <= mid : c.close < mid;
+      if (isFvg) {
+        // FVG: midpoint TOUCH already consumes freshness (unchanged by the OB rule)
+        const dead = z.direction === "BULLISH" ? c.low <= mid : c.high >= mid;
         if (dead) {
           zoneMitigatedAt.set(z.id, i);
           break;
         }
-      }
-      if (z.direction === "BEARISH") {
-        const dead = isFvg ? c.high >= mid : c.close > mid;
-        if (dead) {
-          zoneMitigatedAt.set(z.id, i);
-          break;
-        }
+      } else if (obInvalidated(z, c, obInvalidation)) {
+        zoneMitigatedAt.set(z.id, i);
+        break;
       }
     }
   }
@@ -1092,7 +1094,7 @@ function evaluateModel(
   const rationale = [
     `${modelLabel}: ${sweep ? "sweep → " : ""}${structureAnchor.type} → displacement → ${pick.overlap ? "FVG+OB overlap" : pick.isFvg ? "FVG" : "OB"} retracement.`,
     pdOk ? "Premium/discount confluence present." : "Premium/discount NOT aligned (optional confluence, no gate).",
-    smtAligned ? "XAU/XAG SMT divergence confirms." : "No SMT confirmation (optional).",
+    smtAligned ? "SMT divergence with the companion series confirms." : "No SMT confirmation (optional).",
     inKillzone ? `Inside ${SESSION_LABELS[session as keyof typeof SESSION_LABELS] ?? session}.` : "Outside kill zones (optional confluence, no gate).",
     ...pick.notes.map((n) => `Zone: ${n}`),
   ];
@@ -1321,7 +1323,7 @@ function buildTrace(a: {
     smt: item(a.smtAligned, {
       timestamp: c.time, timeframe: tf,
       reason: a.smtAligned
-        ? "XAU/XAG SMT divergence aligned within the 20-bar window."
+        ? "Companion SMT divergence aligned within the 20-bar window (see the SMT companion panel for the series used)."
         : "No aligned SMT divergence in the window — optional confluence, not required.",
     }),
     structuralStop: item(true, {
@@ -1467,8 +1469,8 @@ export function probeSetupState(ctx: SeriesContext, i: number, cfg: EngineConfig
   push("orderBlock", "Order block (entry zone)", true, obOk, obReason);
 
   const smtAligned = side ? (wantBullish ? ctx.smtBullishAt(i) : ctx.smtBearishAt(i)) : false;
-  push("smt", "SMT divergence (XAU/XAG)", false, smtAligned,
-    smtAligned ? "XAU/XAG SMT divergence aligned within the 20-bar window." : "No aligned SMT divergence — optional confirmation, never required.");
+  push("smt", "SMT divergence (companion)", false, smtAligned,
+    smtAligned ? "Companion SMT divergence aligned within the 20-bar window." : "No aligned SMT divergence — optional confirmation, never required.");
 
   // per-model outcome for the "what blocked each model" footer
   const perModel: ProbeResult["perModel"] = [];
