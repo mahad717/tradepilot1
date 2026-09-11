@@ -39,7 +39,7 @@ import { runMonteCarlo, type MonteCarloResult } from "./montecarlo";
 import { walkForward, type WalkForwardResult } from "./walkforward";
 import { smtSeries, type SmtEvent } from "./smtseries";
 import { DEFAULT_COSTS, describeCosts } from "./costs";
-import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary } from "./types";
+import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary, ObPipeline } from "./types";
 import type { Candle } from "@/lib/market/types";
 
 export interface BacktestResult {
@@ -64,6 +64,10 @@ export interface BacktestResult {
   orderFlow: OrderFlowSummary;
   /** same-candle SL+TP collisions — 0 means the ambiguity model had no effect */
   ambiguityCollisions: number;
+  /** where Order-Block candidates actually die (Model C/D diagnosis) */
+  obPipeline: ObPipeline;
+  /** requested vs actually-fetched history (deep windows can fall short) */
+  fetch: { requested: number; receivedRaw: number; requests: number; shortfallPct: number; deep: boolean };
   strictness: Strictness;
   strictnessNote: string;
   lossReasons: LossReasonRow[];
@@ -84,6 +88,11 @@ export interface BacktestResult {
     partialShares: number[];
     maxHoldBars: number;
     tierThresholds: { aPlus: number; a: number; b: number };
+    entryAnchor: string;
+    entryToleranceR: number;
+    maxCostPctOfR: number;
+    targetHorizonR: number;
+    orderExpiryBars: number;
   };
   notes: string[];
 }
@@ -166,11 +175,29 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     ? await getCandlesDeep(symbol, interval, bars)
     : await getCandles(symbol, interval, bars);
   const rawCandles = fetchRes.candles;
+  // fetch accounting: deep windows can silently fall short (upstream runs
+  // dry / request budget) — surface requested vs received so two runs of
+  // the same selector are comparable and shortfalls are never hidden.
+  const requests = (fetchRes as { requests?: number }).requests ?? 0;
+  const fetch = {
+    requested: bars,
+    receivedRaw: rawCandles.length,
+    requests,
+    shortfallPct: bars > 0 ? Math.max(0, Math.round(((bars - rawCandles.length) / bars) * 1000) / 10) : 0,
+    deep: bars > 5000,
+  };
   // Spot metals feeds quote ~24/7 — drop dead weekend hours so ICT session
   // logic never fires in a closed market. Counted in the data-quality audit.
   const { candles, dropped: weekendDropped } = dropWeekendCandles(rawCandles);
   if (candles.length < 150) throw new Error("Not enough historical candles for a backtest");
   const dataQuality = auditDataQuality(candles, intervalSecondsOf(interval), weekendDropped);
+  dataQuality.requestedBars = fetch.requested;
+  dataQuality.rawFetched = fetch.receivedRaw;
+  dataQuality.fetchRequests = fetch.requests;
+  dataQuality.fetchShortfallPct = fetch.shortfallPct;
+  if (fetch.deep && fetch.shortfallPct > 10) {
+    dataQuality.note += ` WARNING: requested ${fetch.requested} bars but the upstream delivered only ${fetch.receivedRaw} raw (${fetch.shortfallPct}% shortfall over ${fetch.requests} chunk requests) — this window is SMALLER than the selector promises; runs are only comparable at equal received bars.`;
+  }
 
   // silver for SMT confirmation (optional — simulated silver is labelled)
   let silver: Candle[] = [];
@@ -202,7 +229,9 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     }
   }
 
-  return runBacktestCore(symbol, interval, candles, smtEvents, cfg, fetchRes.source, silverSource, ltfCandles, ltfSeconds, strictness, dataQuality);
+  const result = runBacktestCore(symbol, interval, candles, smtEvents, cfg, fetchRes.source, silverSource, ltfCandles, ltfSeconds, strictness, dataQuality);
+  result.fetch = fetch; // caller-side accounting overrides the core default
+  return result;
 }
 
 function intervalSecondsOf(interval: IntervalKey): number {
@@ -243,6 +272,7 @@ export function runBacktestCore(
     randomSeed: cfg.randomSeed,
     riskMoney: cfg.riskMoney,
     costs: cfg.costs[symbol] ?? DEFAULT_COSTS[symbol],
+    entryToleranceR: cfg.entryToleranceR,
   };
   const executeOpts = { ltfCandles, ltfSeconds, parentSeconds: ctx.intervalSec };
 
@@ -294,8 +324,10 @@ export function runBacktestCore(
     i = Math.max(res.endIndex + 1, i + 1);
   }
 
-  // tag losers for diagnostics
-  for (const t of trades) t.lossReasons = t.netR < 0 ? lossReasonTags(t) : [];
+  // tag losers for diagnostics (SMT attribution only when SMT was live —
+  // "no-smt" on 100% of losers is noise when the gate is unavailable for all)
+  const smtLive = silverSource !== "unavailable" && silverSource !== "SIMULATED";
+  for (const t of trades) t.lossReasons = t.netR < 0 ? lossReasonTags(t, smtLive) : [];
 
   const metrics = computeMetrics(trades);
   let equity = 0;
@@ -316,10 +348,15 @@ export function runBacktestCore(
   const notes = [
     `Strictness preset: ${strictness.toUpperCase()} — ${STRICTNESS_PRESETS[strictness]}.`,
     `Models enabled: ${cfg.models.join(", ")}. Core requirements (spec §5): HTF context + liquidity event + MSS/CHOCH + displacement + entry zone + structural SL + valid target. SMT, kill zone, FVG+OB overlap, premium/discount and session liquidity are OPTIONAL score confluence.`,
-    "Stops and targets are STRUCTURAL (sweep extremes, protected swings, liquidity pools, PDH/PDL, PWH/PWL, session and external range liquidity) — never fixed R multiples. The minRR gate asks whether AT LEAST ONE structural target is minRR away (TP3 = farthest level, not the 3rd-nearest).",
+    "Stops and targets are STRUCTURAL (sweep extremes, protected swings, liquidity pools, PDH/PDL, PWH/PWL, session and external range liquidity) — never fixed R multiples. The minRR gate asks whether AT LEAST ONE structural target within the horizon is minRR away (TP3 = farthest IN-HORIZON level).",
     "Kill zones are DST-aware market-local windows (London 07:00–10:00 Europe/London, NY AM 09:30–12:00 and NY PM 13:30–16:00 America/New_York, Asia 00:00–06:00 UTC).",
     "Accounting: R is measured against each trade's INITIAL stop. Partial exits are share-weighted legs. Breakeven moves take effect the bar after activation.",
     `Costs model — ${symbol}: ${describeCosts(cfg.costs[symbol] ?? DEFAULT_COSTS[symbol])}. Gross R and cost R are reported separately; expectancy is shown gross AND net.`,
+    cfg.maxCostPctOfR > 0
+      ? `Execution-cost gate: ON — setups whose estimated round-trip cost exceeds ${(cfg.maxCostPctOfR * 100).toFixed(0)}% of 1R are declined (${ctx.diag.costRejected} rejected at the gate).`
+      : "Execution-cost gate: OFF — every setup is evaluated regardless of its cost share of 1R.",
+    `Entry: limit at the zone ${cfg.entryAnchor === "midpoint" ? "MIDPOINT (deeper fill, worse location)" : "proximal EDGE (ICT default)"}${cfg.entryToleranceR > 0 ? `, tolerance +${cfg.entryToleranceR}R (marketable last-look)` : ", strict touch (no tolerance)"}.`,
+    `Target horizon: execution ladder capped at ${cfg.targetHorizonR}R — farther structural levels are landmarks for the RR landmark view, not tradable targets.`,
     `Same-candle SL/TP ambiguity: ${cfg.ambiguity} model. Pessimistic assumes the stop fills first.`,
     `Sessions traded: ${cfg.sessions.length ? cfg.sessions.join(", ") : "ALL (kill zone is a score confluence)"}. Volatility blocks: ${cfg.blockedVolRegimes.join(", ") || "none"}. UNCLEAR market regime → NO TRADE.`,
     dq.note,
@@ -333,6 +370,21 @@ export function runBacktestCore(
         : "Live silver feed used for SMT confirmation.",
     "Rule-based historical study for strategy evaluation only — past performance does not guarantee future results. Never describe a small sample as statistically reliable.",
   ];
+
+  const rrDiagOut = rrDiagnostics(ctx.diag.rrDiag);
+  const modelCStat = ctx.diag.byModel.get("C_OB_REVERSAL");
+  const obPipeline: ObPipeline = {
+    zonesCreated: ctx.diag.obZonesCreated,
+    zonesInvalidated: ctx.diag.obZonesInvalidated,
+    windowSeen: ctx.diag.obWindowSeen,
+    skippedMitigated: ctx.diag.obSkipMitigated,
+    skippedPosition: ctx.diag.obSkipPosition,
+    skippedSweepExtreme: ctx.diag.obSkipSweepExtreme,
+    skippedBlacklist: ctx.diag.obSkipBlacklist,
+    candidatesWithOb: ctx.diag.obSeen,
+    modelCValidSetups: modelCStat?.valid ?? 0,
+    note: obPipelineNote(ctx.diag),
+  };
 
   return {
     symbol,
@@ -349,12 +401,14 @@ export function runBacktestCore(
     funnel: funnelStages({ totalCandles: candles.length, diag: ctx.diag, funnel: ctx.funnel }),
     rejections: rejectionTable(ctx.diag),
     modelStats: modelPerformance(ctx.diag, trades),
-    rrDiagnostics: rrDiagnostics(ctx.diag.rrDiag),
+    rrDiagnostics: rrDiagOut,
     sessionFilterDiagnostics: sessionDiagnostics(ctx.diag),
     rejectedSamples: ctx.diag.samples,
     dataQuality: dq,
     orderFlow: summarizeOrderFlow(pendingTelemetry, cfg.orderExpiryBars),
     ambiguityCollisions,
+    obPipeline,
+    fetch: { requested: candles.length, receivedRaw: candles.length, requests: 0, shortfallPct: 0, deep: false },
     strictness,
     strictnessNote: STRICTNESS_PRESETS[strictness],
     lossReasons: lossReasonTable(trades),
@@ -375,13 +429,41 @@ export function runBacktestCore(
       partialShares: [...cfg.partialShares],
       maxHoldBars: cfg.maxHoldBars,
       tierThresholds: { aPlus: cfg.tierAPlus, a: cfg.tierA, b: cfg.tierB },
+      entryAnchor: cfg.entryAnchor,
+      entryToleranceR: cfg.entryToleranceR,
+      maxCostPctOfR: cfg.maxCostPctOfR,
+      targetHorizonR: cfg.targetHorizonR,
+      orderExpiryBars: cfg.orderExpiryBars,
     },
     notes,
   };
 }
 
 // local re-implementations to avoid circular import with diagnostics
-function lossReasonTags(t: TradeRecord): string[] {
+/** One-line diagnosis of where OB candidates actually die. */
+function obPipelineNote(diag: import("./sequence").DiagSink): string {
+  if (diag.obZonesCreated === 0) {
+    return "No order blocks were created in this window at all — the displacement requirement (body ≥ 1.2 × per-bar ATR with opposing direction) never fired; the detector, not the window, is the bottleneck.";
+  }
+  const parts: string[] = [
+    `${diag.obZonesCreated} OBs created series-wide (${diag.obZonesInvalidated} later invalidated by a close through midpoint)`,
+  ];
+  if (diag.obWindowSeen === 0) {
+    parts.push("NONE fell inside a candidate's sweep→MSS window — the sequence window, not OB quality, is the bottleneck");
+  } else {
+    parts.push(`${diag.obWindowSeen} seen in candidate windows`);
+    const skips: string[] = [];
+    if (diag.obSkipMitigated) skips.push(`${diag.obSkipMitigated} mitigated/consumed`);
+    if (diag.obSkipPosition) skips.push(`${diag.obSkipPosition} already consumed by price`);
+    if (diag.obSkipSweepExtreme) skips.push(`${diag.obSkipSweepExtreme} insane vs sweep extreme`);
+    if (diag.obSkipBlacklist) skips.push(`${diag.obSkipBlacklist} blacklisted`);
+    if (skips.length) parts.push(`skips: ${skips.join(", ")}`);
+    parts.push(`${diag.obSeen} candidates kept a usable OB`);
+  }
+  return `${parts.join(" — ")}.`;
+}
+
+function lossReasonTags(t: TradeRecord, smtLive: boolean): string[] {
   const tags: string[] = [];
   if (t.scores.liquidity < 12) tags.push("weak-sweep");
   if (t.scores.structure < 16) tags.push("weak-displacement");
@@ -389,7 +471,7 @@ function lossReasonTags(t: TradeRecord): string[] {
   if (t.mktRegime === "RANGE") tags.push("range-market");
   if (t.volRegime === "HIGH" || t.volRegime === "EXTREME") tags.push("high-volatility");
   if (t.volRegime === "LOW") tags.push("low-volatility");
-  if (!t.smtAligned) tags.push("no-smt");
+  if (smtLive && !t.smtAligned) tags.push("no-smt");
   if (t.plannedRR < 2.5) tags.push("low-rr");
   if (t.session === "off-session") tags.push("bad-session");
   if (t.mfeR >= 1) tags.push("gave-back-1r-plus");
@@ -415,6 +497,7 @@ function sessionStatsOf(trades: TradeRecord[]) {
 
 function scoreBucketsOf(trades: TradeRecord[]) {
   const buckets: { bucket: string; test: (t: TradeRecord) => boolean }[] = [
+    { bucket: "60–69 (C)", test: (t) => t.totalScore >= 60 && t.totalScore < 70 },
     { bucket: "70–79 (B)", test: (t) => t.totalScore >= 70 && t.totalScore < 80 },
     { bucket: "80–89 (A)", test: (t) => t.totalScore >= 80 && t.totalScore < 90 },
     { bucket: "90–100 (A+)", test: (t) => t.totalScore >= 90 },
@@ -471,4 +554,97 @@ export async function compareStrictness(
     });
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Dimension comparison — run the SAME data through variants of ONE execution
+// dimension (expiry window / session filter / entry placement) and report all
+// variants objectively. Never auto-select a winner. This exists because the
+// diagnostics showed the decision-relevant sensitivities are NOT strictness:
+// costs, entry placement and target realism.
+// ---------------------------------------------------------------------------
+
+export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry";
+
+export interface DimensionRow {
+  label: string;
+  description: string;
+  trades: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  profitFactor: number | null;
+  maxDrawdownR: number;
+  netR: number;
+  grossR: number;
+  costsR: number;
+}
+
+export interface DimensionComparison {
+  dimension: CompareDimension;
+  rows: DimensionRow[];
+}
+
+const dimRow = (label: string, description: string, r: BacktestResult): DimensionRow => ({
+  label,
+  description,
+  trades: r.metrics.trades,
+  winRate: r.metrics.winRate,
+  expectancyR: r.metrics.expectancyR,
+  profitFactor: r.metrics.profitFactor,
+  maxDrawdownR: r.metrics.maxDrawdownR,
+  netR: r.metrics.netR,
+  grossR: r.metrics.grossR,
+  costsR: r.metrics.costsR,
+});
+
+export async function compareDimension(
+  opts: {
+    symbol: SymbolKey;
+    interval: IntervalKey;
+    bars?: number;
+    config?: Partial<EngineConfig>;
+    includeSilverForSmt?: boolean;
+  },
+  dimension: CompareDimension
+): Promise<DimensionComparison> {
+  const run = (label: string, description: string, over: Partial<EngineConfig>) =>
+    runBacktest({ ...opts, config: { ...opts.config, ...over } }).then((r) => dimRow(label, description, r));
+
+  if (dimension === "expiry") {
+    const rows = await Promise.all([
+      run("6-bar expiry", "pending limits live 6 bars", { orderExpiryBars: 6 }),
+      run("12-bar expiry", "pending limits live 12 bars (current default)", { orderExpiryBars: 12 }),
+      run("24-bar expiry", "pending limits live 24 bars", { orderExpiryBars: 24 }),
+    ]);
+    return { dimension, rows };
+  }
+  if (dimension === "sessions") {
+    const rows = await Promise.all([
+      run("All sessions", "every session allowed (kill zone = score confluence only)", { sessions: [] }),
+      run("Kill zones only", "asia + london + ny-am + ny-pm allowed", { sessions: ["asia", "london", "ny-am", "ny-pm"] }),
+    ]);
+    return { dimension, rows };
+  }
+  if (dimension === "entry") {
+    const rows = await Promise.all([
+      run("Edge + strict", "limit at the proximal edge, no tolerance (current default)", { entryAnchor: "edge", entryToleranceR: 0 }),
+      run("Edge + 0.05R tolerance", "marketable last-look within 0.05R of the edge limit", { entryAnchor: "edge", entryToleranceR: 0.05 }),
+      run("Midpoint + strict", "limit at the zone midpoint — deeper fill, worse location", { entryAnchor: "midpoint", entryToleranceR: 0 }),
+    ]);
+    return { dimension, rows };
+  }
+  // strictness — reuse the preset comparison, normalized to the same row shape
+  const rows = (await compareStrictness(opts)).map((r) => ({
+    label: r.strictness,
+    description: r.description,
+    trades: r.trades,
+    winRate: r.winRate,
+    expectancyR: r.expectancyR,
+    profitFactor: r.profitFactor,
+    maxDrawdownR: r.maxDrawdownR,
+    netR: r.netR,
+    grossR: 0,
+    costsR: 0,
+  }));
+  return { dimension: "strictness", rows };
 }

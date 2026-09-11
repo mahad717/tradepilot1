@@ -169,6 +169,7 @@ export function funnelStages(ctx: {
     { stage: "Order Block detected", count: diag.obSeen, pct: pct(diag.obSeen), unit: "candidates" },
     { stage: "Premium/discount condition", count: diag.pdOk, pct: pct(diag.pdOk), unit: "candidates" },
     { stage: "Valid retracement (zone + stop)", count: diag.stopValid, pct: pct(diag.stopValid), unit: "candidates" },
+    { stage: "Execution cost within gate", count: Math.max(0, diag.stopValid - diag.costRejected), pct: pct(Math.max(0, diag.stopValid - diag.costRejected)), unit: "candidates" },
     { stage: "Structural target valid", count: diag.targetsValid, pct: pct(diag.targetsValid), unit: "candidates" },
     { stage: "SMT confirmation", count: diag.smtOk, pct: pct(diag.smtOk), unit: "candidates" },
     { stage: "Minimum RR satisfied", count: diag.rrOk, pct: pct(diag.rrOk), unit: "candidates" },
@@ -251,6 +252,7 @@ export interface PendingTelemetryInput {
   fillBarOffset: number | null;
   lateFillBarOffset: number | null;
   closestApproachR: number | null;
+  toleranceFill: boolean;
 }
 
 export function summarizeOrderFlow(items: PendingTelemetryInput[], expiryBars: number): OrderFlowSummary {
@@ -262,6 +264,7 @@ export function summarizeOrderFlow(items: PendingTelemetryInput[], expiryBars: n
     .map((p) => p.fillBarOffset)
     .filter((v): v is number => v !== null);
   const lateFills = items.filter((p) => p.lateFillBarOffset !== null).length;
+  const toleranceFills = items.filter((p) => p.toleranceFill).length;
   const approaches = items
     .filter((p) => p.outcome === "expired")
     .map((p) => p.closestApproachR)
@@ -278,6 +281,7 @@ export function summarizeOrderFlow(items: PendingTelemetryInput[], expiryBars: n
   if (expired > 0 && median !== null && median > 0.75) notes.push(`Expired orders never came closer than ~${median}R to entry — the retracement depth, not the expiry window, is the constraint.`);
   else if (expired > 0 && median !== null) notes.push(`Expired orders came within ~${median}R of entry — a longer expiry window (or a nearer entry limit) would have caught several.`);
   if (lateFills > 0) notes.push(`${lateFills} order${lateFills === 1 ? "" : "s"} were eventually touched AFTER the ${expiryBars}-bar expiry window.`);
+  if (toleranceFills > 0) notes.push(`${toleranceFills} fill${toleranceFills === 1 ? "" : "s"} came from the entry-tolerance margin (price never actually touched the limit).`);
   if (placed > 0 && rateAt(48) !== null) notes.push(`Cumulative fill rate: ${rateAt(6)}% within 6 bars, ${rateAt(12)}% within 12, ${rateAt(24)}% within 24, ${rateAt(48)}% within 48.`);
   return {
     placed,
@@ -285,6 +289,7 @@ export function summarizeOrderFlow(items: PendingTelemetryInput[], expiryBars: n
     expired,
     invalidated,
     lateFills,
+    toleranceFills,
     fillLatency: { le3: bucket(3), le6: bucket(6), le12: bucket(12), le24: bucket(24), le48: bucket(48) },
     fillRateAt: { bars6: rateAt(6), bars12: rateAt(12), bars24: rateAt(24), bars48: rateAt(48) },
     medianClosestApproachR: median,
@@ -295,6 +300,10 @@ export function summarizeOrderFlow(items: PendingTelemetryInput[], expiryBars: n
 /** RR-filter histogram counted BEFORE the gate applies (spec §9). */
 export function rrDiagnostics(rr: DiagSink["rrDiag"]): RrDiagnostics {
   const sorted = [...rr.values].sort((a, b) => a - b);
+  const med = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s.length ? s[Math.floor(s.length / 2)] : null;
+  };
   return {
     evaluated: rr.evaluated,
     beforeFilter: rr.withTargets,
@@ -303,7 +312,12 @@ export function rrDiagnostics(rr: DiagSink["rrDiag"]): RrDiagnostics {
     ge2_5: rr.ge25,
     ge3: rr.ge30,
     medianMaxRr: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
+    medianTp1Rr: med(rr.tp1Values),
+    medianTp3Rr: med(rr.tp3Values),
+    targetsCapped: rr.targetsCappedAccum,
     sample: rr.values.slice(-400),
+    tp1Sample: rr.tp1Values.slice(-400),
+    tp3Sample: rr.tp3Values.slice(-400),
   };
 }
 
@@ -407,11 +421,19 @@ export interface ManagementRates {
   beRate: number;
   timeoutRate: number;
   slRate: number;
+  /** median bars from fill to each TP hit — null when that TP never hit */
+  medianBarsToTp1: number | null;
+  medianBarsToTp2: number | null;
+  medianBarsToTp3: number | null;
 }
 
 export function managementRates(trades: TradeRecord[]): ManagementRates {
   const n = trades.length || 1;
   const pct = (arr: TradeRecord[]) => round((arr.length / n) * 100);
+  const medBars = (pick: (t: TradeRecord) => number | null): number | null => {
+    const v = trades.map(pick).filter((x): x is number => x !== null).sort((a, b) => a - b);
+    return v.length ? v[Math.floor(v.length / 2)] : null;
+  };
   return {
     tp1HitRate: pct(trades.filter((t) => t.legs.some((l) => l.label === "TP1"))),
     tp2HitRate: pct(trades.filter((t) => t.legs.some((l) => l.label === "TP2"))),
@@ -419,6 +441,9 @@ export function managementRates(trades: TradeRecord[]): ManagementRates {
     beRate: pct(trades.filter((t) => t.breakevenStop !== null && t.outcome !== "SL")),
     timeoutRate: pct(trades.filter((t) => t.legs.some((l) => l.label === "TIMEOUT"))),
     slRate: pct(trades.filter((t) => t.outcome === "SL")),
+    medianBarsToTp1: medBars((t) => t.barsToTp1),
+    medianBarsToTp2: medBars((t) => t.barsToTp2),
+    medianBarsToTp3: medBars((t) => t.barsToTp3),
   };
 }
 
@@ -515,14 +540,21 @@ export function robustnessFlags(
   if (pf !== null && pf < 0.95) reasons.push("Profit factor below 0.95");
   if (pf === null && metrics.trades > 0) reasons.push("No losing trades in sample — profit factor is N/A, not 99");
   if (metrics.maxDrawdownR > 8) reasons.push(`Drawdown ${metrics.maxDrawdownR}R is large relative to typical expectations`);
+  // Out-of-sample honesty: the LAST walk-forward period is the held-out
+  // stretch. A GREEN verdict must not paper over a negative OOS period.
+  const oos = periods.length ? periods[periods.length - 1] : null;
+  const oosNet = oos?.netR ?? null;
+  const oosNegative = oosNet !== null && oosNet < 0;
   if (periods.length >= 3) {
     if (positivePeriods / periods.length >= 0.6) reasons.push(`${positivePeriods}/${periods.length} periods positive`);
     else reasons.push(`Only ${positivePeriods}/${periods.length} periods positive — performance uneven across time`);
     if (bestPeriodShare > 0.8) reasons.push("Most of the net gain depends on a single period");
+    else if (bestPeriodShare > 0.6) reasons.push(`${Math.round(bestPeriodShare * 100)}% of the net gain comes from a single period — performance is concentrated, not evenly distributed`);
+    if (oosNegative) reasons.push(`Out-of-sample period NEGATIVE (${oosNet}R over ${oos?.trades ?? 0} trades) — the recent regime was not kind to this configuration`);
   }
 
   const red = (exp !== null && exp < -0.05) || (pf !== null && pf < 0.9) || (periods.length >= 3 && bestPeriodShare > 0.8 && exp !== null && exp <= 0.05);
-  const green = exp !== null && pf !== null && exp > 0.05 && pf > 1.1 && metrics.trades >= 30 && metrics.maxDrawdownR <= 8 && periods.length >= 3 && positivePeriods / periods.length >= 0.6 && bestPeriodShare <= 0.6;
+  const green = exp !== null && pf !== null && exp > 0.05 && pf > 1.1 && metrics.trades >= 30 && metrics.maxDrawdownR <= 8 && periods.length >= 3 && positivePeriods / periods.length >= 0.6 && bestPeriodShare <= 0.6 && !oosNegative;
   return { level: red ? "RED" : green ? "GREEN" : "YELLOW", reasons };
 }
 

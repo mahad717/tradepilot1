@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { runBacktest, compareStrictness, type StrictnessComparisonRow } from "@/lib/ict/backtest";
+import { runBacktest, compareStrictness, compareDimension, type StrictnessComparisonRow, type CompareDimension } from "@/lib/ict/backtest";
 import type { Strictness } from "@/lib/ict/sequence";
 import { getAuthUser } from "@/lib/auth";
 import { getDb, DbUnavailableError } from "@/lib/db";
@@ -12,6 +12,7 @@ const BE_MODES = ["off", "tp1", "risk1", "structural"];
 const AMBIGUITY_MODES = ["pessimistic", "optimistic", "randomized", "ltf"];
 const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
 const STRICTNESS_LEVELS = ["conservative", "balanced", "aggressive"];
+const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry"];
 
 /**
  * Persistence features need a database (D1 on Cloudflare, SQLite locally).
@@ -42,7 +43,12 @@ export async function GET(req: Request) {
   const seed = Number(searchParams.get("seed") ?? 42);
   const sessionsParam = searchParams.get("sessions") ?? "";
   const strictnessParam = searchParams.get("strictness") ?? "balanced";
+  const entryAnchorParam = searchParams.get("entryAnchor") ?? "edge";
+  const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0");
+  const costGateParam = Number(searchParams.get("costGate") ?? "0.35");
+  const horizonParam = Number(searchParams.get("horizon") ?? "8");
   const compare = searchParams.get("compare") === "1";
+  const compareDimParam = searchParams.get("compareDim") ?? "strictness";
   const sensitivityParam = searchParams.get("sensitivity") ?? "";
 
   if (!isSymbolKey(symbol)) {
@@ -66,6 +72,21 @@ export async function GET(req: Request) {
   if (!STRICTNESS_LEVELS.includes(strictnessParam)) {
     return NextResponse.json({ error: "Unknown strictness preset" }, { status: 400 });
   }
+  if (!COMPARE_DIMENSIONS.includes(compareDimParam)) {
+    return NextResponse.json({ error: "Unknown compareDim (strictness|expiry|sessions|entry)" }, { status: 400 });
+  }
+  if (entryAnchorParam !== "edge" && entryAnchorParam !== "midpoint") {
+    return NextResponse.json({ error: "entryAnchor must be edge|midpoint" }, { status: 400 });
+  }
+  if (!Number.isFinite(entryToleranceParam) || entryToleranceParam < 0 || entryToleranceParam > 0.5) {
+    return NextResponse.json({ error: "entryTolerance must be between 0 and 0.5" }, { status: 400 });
+  }
+  if (!Number.isFinite(costGateParam) || costGateParam < 0 || costGateParam > 2) {
+    return NextResponse.json({ error: "costGate must be between 0 (off) and 2" }, { status: 400 });
+  }
+  if (!Number.isFinite(horizonParam) || horizonParam < 0 || horizonParam > 50) {
+    return NextResponse.json({ error: "horizon must be between 0 (off) and 50" }, { status: 400 });
+  }
   const strictness = strictnessParam as Strictness;
   const sessions = sessionsParam
     .split(",")
@@ -84,6 +105,10 @@ export async function GET(req: Request) {
         ambiguity: ambiguity as never,
         randomSeed: Number.isFinite(seed) ? seed : 42,
         sessions,
+        entryAnchor: entryAnchorParam as never,
+        entryToleranceR: entryToleranceParam,
+        maxCostPctOfR: costGateParam,
+        targetHorizonR: horizonParam,
       },
     });
 
@@ -99,7 +124,7 @@ export async function GET(req: Request) {
         const r =
           rr === minRR
             ? result
-            : await runBacktest({ symbol, interval, bars, strictness, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions } });
+            : await runBacktest({ symbol, interval, bars, strictness, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam } });
         sensitivity.push({
           minRR: rr,
           trades: r.metrics.trades,
@@ -111,18 +136,32 @@ export async function GET(req: Request) {
       }
     }
 
-    // Conservative / Balanced / Aggressive comparison (spec §16, §17)
+    // Comparison across ONE dimension (spec §16, §17 extended): strictness
+    // presets, pending-order expiry, session filter, or entry placement.
     let comparison: StrictnessComparisonRow[] | undefined;
+    let dimensionComparison: Awaited<ReturnType<typeof compareDimension>> | undefined;
     if (compare) {
-      comparison = await compareStrictness({
-        symbol,
-        interval,
-        bars,
-        config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions },
-      });
+      const dim = compareDimParam as CompareDimension;
+      dimensionComparison = await compareDimension(
+        {
+          symbol,
+          interval,
+          bars,
+          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam },
+        },
+        dim
+      );
+      if (dim === "strictness") {
+        comparison = await compareStrictness({
+          symbol,
+          interval,
+          bars,
+          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam },
+        });
+      }
     }
 
-    return NextResponse.json({ ...result, sensitivity, comparison }, {
+    return NextResponse.json({ ...result, sensitivity, comparison, dimensionComparison }, {
       headers: { "Cache-Control": "private, max-age=300" },
     });
   } catch (err) {

@@ -18,6 +18,7 @@
 import type { Candle, Setup, TradeRecord } from "./types";
 import { simulateTrade, type ExecuteConfig } from "./execution";
 import { runBacktestCore } from "./backtest";
+import { selectTradeTargets } from "./targets";
 import { DEFAULT_CONFIG, buildSeriesContext, buildSetupAt, type EngineConfig, type SeriesContext, type CooldownState } from "./sequence";
 import { resample, htfSecondsFor } from "./htf";
 import { findSwings } from "./swings";
@@ -89,6 +90,7 @@ function execConfig(over: Partial<ExecuteConfig> = {}): ExecuteConfig {
     randomSeed: 42,
     riskMoney: 100,
     costs: ZERO_COSTS,
+    entryToleranceR: 0,
     ...over,
   };
 }
@@ -348,6 +350,90 @@ export function runAllTests(): TestResult[] {
       "Pending-order telemetry",
       pass && passFar,
       `expired order: lateFill=${p.lateFillBarOffset} closest=${p.closestApproachR}R (expect touch after expiry → 0R); untouched control: closest=${resFar.pending.closestApproachR}R (expect >1R, no late fill)`
+    );
+  }
+
+  // ---- 15. entry tolerance fills (marketable last-look) -------------------
+  {
+    // Same fixture as the pending-order telemetry test: entry 100, risk 2.
+    // During the 10-bar window the lows reach 100.5 — 0.5 price units away
+    // = 0.25R. Strict touch (tolerance 0) must NOT fill; tolerance 0.25R
+    // MUST fill, and both the trade and the telemetry must say so.
+    const rows: [number, number, number, number][] = [
+      ...Array.from({ length: 6 }, (_, k) => [100 + k * 0.1, 100.9, 99.9 + k * 0.1, 100.4 + k * 0.1] as [number, number, number, number]),
+      ...Array.from({ length: 10 }, (_, k) => [100.6, 101.4, 100.5, 101.0 + (k % 2) * 0.2] as [number, number, number, number]),
+      [101.0, 101.6, 99.8, 100.0],
+      [100.0, 100.8, 99.7, 100.3],
+    ];
+    const candles = mkCandles(rows);
+    const strict = simulateTrade(candles, mkSetup({ decidedIndex: 5, decidedTime: candles[5].time }), execConfig({ orderExpiryBars: 10, entryToleranceR: 0 }), "XAUUSD", "15min");
+    const tol = simulateTrade(candles, mkSetup({ decidedIndex: 5, decidedTime: candles[5].time }), execConfig({ orderExpiryBars: 10, entryToleranceR: 0.25 }), "XAUUSD", "15min");
+    const pass =
+      strict.filled === false &&
+      tol.filled === true &&
+      tol.trade !== null &&
+      tol.trade.toleranceFill === true &&
+      tol.pending.toleranceFill === true &&
+      Math.abs((tol.trade?.entry ?? 0) - 100) < 1e-9; // filled AT the limit, not at a better price
+    add(
+      "Entry tolerance: last-look fill counted, never hidden",
+      pass,
+      `strict touch → ${strict.filled ? "filled (WRONG)" : "expired (correct)"}; +0.25R tolerance → ${tol.filled ? `filled @ ${tol.trade?.entry} with toleranceFill=${tol.trade?.toleranceFill}` : "not filled (WRONG)"}`
+    );
+  }
+
+  // ---- 16. target horizon cap (TP3 realism) --------------------------------
+  {
+    const ladder = [
+      { price: 101, source: "nearest swing", weight: 0.6 },
+      { price: 102, source: "equal-highs pool", weight: 0.9 },
+      { price: 110, source: "previous week high", weight: 1.1 },
+    ];
+    const capped = selectTradeTargets(ladder, 100, 1, 8); // horizon 8R
+    const uncapped = selectTradeTargets(ladder, 100, 1, 0); // off
+    const pass =
+      capped.capped === 1 &&
+      capped.tp3 !== null &&
+      Math.abs(capped.tp3.price - 102) < 1e-9 &&
+      Math.abs(capped.maxRR - 2) < 1e-9 &&
+      uncapped.capped === 0 &&
+      uncapped.tp3 !== null &&
+      Math.abs(uncapped.tp3.price - 110) < 1e-9 &&
+      Math.abs(uncapped.maxRR - 10) < 1e-9;
+    add(
+      "Target horizon: far levels are landmarks, not targets",
+      pass,
+      `horizon 8R → TP3=${capped.tp3?.price} (${capped.maxRR}R, ${capped.capped} capped); off → TP3=${uncapped.tp3?.price} (${uncapped.maxRR}R)`
+    );
+  }
+
+  // ---- 17. execution-cost gate (EXCESSIVE_COST) ----------------------------
+  {
+    const candles = syntheticIctSeries(900);
+    // gate OFF + zero costs = baseline; gate effectively ON with any real
+    // cost model and a 0.01R threshold rejects every candidate at the gate
+    const base = runBacktestCore("XAUUSD", "15min", candles, [], testCoreConfig({ maxCostPctOfR: 0 }));
+    const gated = runBacktestCore("XAUUSD", "15min", candles, [], testCoreConfig({ maxCostPctOfR: 0.01, costs: { XAUUSD: REAL_COSTS, XAGUSD: REAL_COSTS } }));
+    const gatedRej = gated.rejections.find((r) => r.code === "EXCESSIVE_COST")?.count ?? 0;
+    const costRow = gated.funnel.find((f) => f.stage === "Execution cost within gate");
+    const pass = gated.trades.length === 0 && gatedRej > 0 && gated.trades.length < base.trades.length && !!costRow;
+    add(
+      "Execution-cost gate declines setups before the RR stage",
+      pass,
+      `gate off → ${base.trades.length} trades; gate 0.01R + real costs → ${gated.trades.length} trades, ${gatedRej} EXCESSIVE_COST rejections, funnel row ${costRow ? "present" : "MISSING"}`
+    );
+  }
+
+  // ---- 18. bars-to-TP tracking ---------------------------------------------
+  {
+    const candles = mkCandles(Tp1BeCandles);
+    const res = simulateTrade(candles, mkSetup(), execConfig(), "XAUUSD", "15min");
+    const t = res.trade;
+    const pass = !!t && t.barsToTp1 === 1 && t.barsToTp2 === null && t.barsToTp3 === null;
+    add(
+      "Time-to-target tracking",
+      pass,
+      t ? `barsToTp1=${t.barsToTp1} (expect 1 — filled bar 6, TP1 bar 7), barsToTp2=${t.barsToTp2}, barsToTp3=${t.barsToTp3} (expect null)` : "trade did not fill"
     );
   }
 

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
 import { fmtDate } from "./format";
-import type { BacktestResult, StrictnessComparisonRow } from "@/lib/ict/backtest";
+import type { BacktestResult, StrictnessComparisonRow, DimensionComparison, CompareDimension } from "@/lib/ict/backtest";
 import type { ConfluenceItem, RejectedSetupSample, TradeRecord } from "@/lib/ict/types";
 
 const metricCard = "rounded-lg border border-border bg-card px-3 py-2.5";
@@ -242,13 +242,18 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [minRR, setMinRR] = useState("2");
   const [beMode, setBeMode] = useState("tp1");
   const [ambiguity, setAmbiguity] = useState("pessimistic");
+  const [entryAnchor, setEntryAnchor] = useState("edge");
+  const [entryTolerance, setEntryTolerance] = useState("0");
+  const [costGate, setCostGate] = useState("0.35");
   const [sessions, setSessions] = useState("");
   const [strictness, setStrictness] = useState("balanced");
   const [sensitivity, setSensitivity] = useState(false);
   const [compare, setCompare] = useState(false);
+  const [compareDim, setCompareDim] = useState<CompareDimension>("strictness");
   const [result, setResult] = useState<(BacktestResult & {
     sensitivity?: { minRR: number; trades: number; winRate: number | null; expectancyR: number | null; profitFactor: number | null; netR: number }[];
     comparison?: StrictnessComparisonRow[];
+    dimensionComparison?: DimensionComparison;
   }) | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -267,11 +272,17 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         minRR,
         beMode,
         ambiguity,
+        entryAnchor,
+        entryTolerance: entryTolerance,
+        costGate,
         sessions,
         strictness,
       });
       if (sensitivity) params.set("sensitivity", "1.5,2,2.5,3");
-      if (compare) params.set("compare", "1");
+      if (compare) {
+        params.set("compare", "1");
+        params.set("compareDim", compareDim);
+      }
       const res = await fetch(`/api/backtest?${params.toString()}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Backtest failed");
@@ -387,14 +398,49 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <option value="ltf">5m resolution (15m only)</option>
           </select>
         </div>
+        <div>
+          <label htmlFor="bt-anchor" className="mb-1 block text-xs text-muted-foreground" title="Proximal edge = ICT default. Midpoint = deeper limit, more fills, worse location.">Entry anchor</label>
+          <select id="bt-anchor" value={entryAnchor} onChange={(e) => setEntryAnchor(e.target.value)} className={selectCls}>
+            <option value="edge">Zone edge</option>
+            <option value="midpoint">Zone midpoint</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bt-tol" className="mb-1 block text-xs text-muted-foreground" title="Marketable last-look: fill when price comes within this many R of the limit without touching it. Tolerance fills are counted, never hidden.">Entry tolerance</label>
+          <select id="bt-tol" value={entryTolerance} onChange={(e) => setEntryTolerance(e.target.value)} className={selectCls}>
+            <option value="0">Strict touch</option>
+            <option value="0.05">+0.05R</option>
+            <option value="0.1">+0.10R</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bt-cost" className="mb-1 block text-xs text-muted-foreground" title="Decline setups whose estimated round-trip cost exceeds this share of 1R. Costs were 44% of gross edge in deep runs.">Cost gate</label>
+          <select id="bt-cost" value={costGate} onChange={(e) => setCostGate(e.target.value)} className={selectCls}>
+            <option value="0">Off</option>
+            <option value="0.25">25% of 1R</option>
+            <option value="0.35">35% of 1R</option>
+            <option value="0.5">50% of 1R</option>
+          </select>
+        </div>
         <label className="flex items-center gap-2 pb-2 text-xs text-muted-foreground">
           <input type="checkbox" checked={sensitivity} onChange={(e) => setSensitivity(e.target.checked)} className="accent-[var(--gold)]" />
           minRR sensitivity
         </label>
-        <label className="flex items-center gap-2 pb-2 text-xs text-muted-foreground" title="Runs Conservative / Balanced / Aggressive on the same data (spec §16)">
+        <label className="flex items-center gap-2 pb-2 text-xs text-muted-foreground" title="Runs a one-dimension comparison on the same data — strictness presets, expiry window, session filter, or entry placement">
           <input type="checkbox" checked={compare} onChange={(e) => setCompare(e.target.checked)} className="accent-[var(--gold)]" />
-          compare strictness
+          compare
         </label>
+        {compare && (
+          <div className="pb-2">
+            <label htmlFor="bt-cdim" className="mb-1 block text-xs text-muted-foreground">Compare dimension</label>
+            <select id="bt-cdim" value={compareDim} onChange={(e) => setCompareDim(e.target.value as CompareDimension)} className={selectCls}>
+              <option value="strictness">Strictness presets</option>
+              <option value="expiry">Expiry window (6/12/24)</option>
+              <option value="sessions">Sessions (all vs kill zones)</option>
+              <option value="entry">Entry placement (edge/tolerance/midpoint)</option>
+            </select>
+          </div>
+        )}
         <Button onClick={run} disabled={loading} className="h-9 bg-primary text-primary-foreground hover:bg-gold-soft">
           {loading ? "Running…" : `Run backtest · ${symbol}`}
         </Button>
@@ -564,7 +610,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           <div className="grid gap-4 lg:grid-cols-2">
             <Section
               title="RR filter diagnostics"
-              subtitle="Counted BEFORE the minimum-RR gate applies — shows whether 2R is the bottleneck. The gate asks whether AT LEAST ONE structural target is minRR away (TP3 = the farthest level, not the 3rd-nearest)."
+              subtitle="Counted BEFORE the minimum-RR gate applies — shows whether 2R is the bottleneck. The gate asks whether AT LEAST ONE structural target WITHIN the horizon is minRR away (TP3 = farthest in-horizon level)."
             >
               <div className="space-y-1.5 text-xs">
                 <div className="flex justify-between"><span className="text-muted-foreground">Candidates reaching the target stage</span><span className="font-mono">{result.rrDiagnostics.evaluated}</span></div>
@@ -573,7 +619,15 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
                 <div className="flex justify-between"><span className="text-muted-foreground">RR ≥ 2.0R</span><span className="font-mono">{result.rrDiagnostics.ge2}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">RR ≥ 2.5R</span><span className="font-mono">{result.rrDiagnostics.ge2_5}</span></div>
                 <div className="flex justify-between"><span className="text-muted-foreground">RR ≥ 3.0R</span><span className="font-mono">{result.rrDiagnostics.ge3}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">Median max available RR</span><span className="font-mono">{num(result.rrDiagnostics.medianMaxRr, "R")}</span></div>
+                <div className="flex justify-between" title="RR to the NEAREST structural level — the target that actually pays TP1">
+                  <span className="text-muted-foreground">Median RR to TP1 (nearest level)</span><span className="font-mono">{num(result.rrDiagnostics.medianTp1Rr, "R")}</span>
+                </div>
+                <div className="flex justify-between" title="RR to the farthest structural level within the horizon cap — the runner target">
+                  <span className="text-muted-foreground">Median RR to TP3 (in-horizon far)</span><span className="font-mono">{num(result.rrDiagnostics.medianTp3Rr, "R")}</span>
+                </div>
+                <div className="flex justify-between" title="Levels excluded from the execution ladder by the target-horizon cap — landmarks (PDH/PWH), not tradable targets">
+                  <span className="text-muted-foreground">Far levels excluded by horizon cap</span><span className="font-mono">{result.rrDiagnostics.targetsCapped}</span>
+                </div>
               </div>
             </Section>
 
@@ -597,7 +651,37 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             </Section>
           </div>
 
-          {/* ---------------- strictness comparison (spec §16, §17) ---------------- */}
+          {/* ---------------- one-dimension comparison (spec §16, §17 extended) ---------------- */}
+          {result.dimensionComparison && result.dimensionComparison.rows.length > 0 && (
+            <Section
+              title={`Comparison — ${result.dimensionComparison.dimension} dimension`}
+              subtitle="Same data, one execution dimension varied, shown objectively. Do NOT assume any variant is better — compare trades, expectancy, PF, drawdown, and remember sample sizes.">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr><th className="px-2 py-1.5 font-medium">Variant</th><th className="px-2 py-1.5 text-right font-medium">Trades</th><th className="px-2 py-1.5 text-right font-medium">Win%</th><th className="px-2 py-1.5 text-right font-medium">Expectancy</th><th className="px-2 py-1.5 text-right font-medium">PF</th><th className="px-2 py-1.5 text-right font-medium">Max DD</th><th className="px-2 py-1.5 text-right font-medium">Gross R</th><th className="px-2 py-1.5 text-right font-medium">Costs R</th><th className="px-2 py-1.5 text-right font-medium">Net R</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {result.dimensionComparison.rows.map((c) => (
+                      <tr key={c.label} className="text-muted-foreground">
+                        <td className="px-2 py-1.5 font-medium text-foreground/90" title={c.description}>{c.label}</td>
+                        <td className="px-2 py-1.5 text-right">{c.trades}</td>
+                        <td className="px-2 py-1.5 text-right">{num(c.winRate, "%")}</td>
+                        <td className={`px-2 py-1.5 text-right ${(c.expectancyR ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{num(c.expectancyR, "R")}</td>
+                        <td className="px-2 py-1.5 text-right">{num(c.profitFactor)}</td>
+                        <td className="px-2 py-1.5 text-right">{c.maxDrawdownR}R</td>
+                        <td className="px-2 py-1.5 text-right">{c.grossR ? `${c.grossR}R` : "—"}</td>
+                        <td className="px-2 py-1.5 text-right">{c.costsR ? `${c.costsR}R` : "—"}</td>
+                        <td className="px-2 py-1.5 text-right font-semibold">{c.netR}R</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+          )}
+
+          {/* ---------------- legacy strictness table (kept when compareDim = strictness) ---------------- */}
           {result.comparison && (
             <Section
               title="Strictness comparison — Conservative vs Balanced vs Aggressive"
@@ -627,6 +711,24 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             </Section>
           )}
 
+          {/* ---------------- order-block creation pipeline (Model C/D diagnosis) ---------------- */}
+          <Section
+            title="Order-Block pipeline — where Model C/D candidates die"
+            subtitle="Series-wide creation → candidate-window visibility → skip reasons. Diagnoses WHY OB reversals are rare before anyone touches a threshold."
+          >
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+              <div className={metricCard} title="OB zones the detector created over the whole series (displacement-qualified opposing candles)"><p className="text-[10px] text-muted-foreground">OBs created</p><p className="font-bold">{result.obPipeline.zonesCreated}</p></div>
+              <div className={metricCard} title="Of those, later invalidated by a CLOSE through the zone midpoint"><p className="text-[10px] text-muted-foreground">Invalidated</p><p className="font-bold">{result.obPipeline.zonesInvalidated}</p></div>
+              <div className={metricCard} title="OBs that fell inside some candidate's sweep→MSS zone window"><p className="text-[10px] text-muted-foreground">In candidate windows</p><p className="font-bold">{result.obPipeline.windowSeen}</p></div>
+              <div className={metricCard} title="Skipped: mitigated / consumed before the candidate could use them"><p className="text-[10px] text-muted-foreground">Skip: mitigated</p><p className="font-bold">{result.obPipeline.skippedMitigated}</p></div>
+              <div className={metricCard} title="Skipped: the limit would cross current price (zone already consumed)"><p className="text-[10px] text-muted-foreground">Skip: consumed</p><p className="font-bold">{result.obPipeline.skippedPosition}</p></div>
+              <div className={metricCard} title="Skipped: zone insane relative to the swept extreme"><p className="text-[10px] text-muted-foreground">Skip: vs sweep</p><p className="font-bold">{result.obPipeline.skippedSweepExtreme}</p></div>
+              <div className={metricCard} title="Candidates that still had a usable OB after all skips"><p className="text-[10px] text-muted-foreground">Candidates w/ OB</p><p className="font-bold">{result.obPipeline.candidatesWithOb}</p></div>
+              <div className={metricCard} title="Model C setups that passed every gate"><p className="text-[10px] text-muted-foreground">Model C valid</p><p className="font-bold">{result.obPipeline.modelCValidSetups}</p></div>
+            </div>
+            <p className="mt-2 text-[11px] text-muted-foreground">{result.obPipeline.note}</p>
+          </Section>
+
           {/* ---------------- pending-order flow: why orders don't fill ---------------- */}
           <Section
             title="Pending-order flow — why orders don't fill"
@@ -639,6 +741,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               <div className={metricCard}><p className="text-[10px] text-muted-foreground">Zone-invalidated</p><p className="font-bold text-red-400">{result.orderFlow.invalidated}</p></div>
               <div className={metricCard} title="Entry was touched AFTER the configured expiry window — evidence the expiry, not the level, was the constraint"><p className="text-[10px] text-muted-foreground">Touched after expiry</p><p className="font-bold">{result.orderFlow.lateFills}</p></div>
               <div className={metricCard} title="Median closest approach of expired orders to the entry limit, in R"><p className="text-[10px] text-muted-foreground">Median closest approach</p><p className="font-bold">{result.orderFlow.medianClosestApproachR === null ? "—" : `${result.orderFlow.medianClosestApproachR}R`}</p></div>
+              <div className={metricCard} title="Fills that happened only because the entry-tolerance margin was applied — price never actually touched the limit"><p className="text-[10px] text-muted-foreground">Tolerance fills</p><p className="font-bold">{result.orderFlow.toleranceFills}</p></div>
             </div>
             <div className="mt-3 space-y-1 text-xs text-muted-foreground">
               <p>Fill latency (filled orders): ≤3 bars {result.orderFlow.fillLatency.le3} · ≤6 {result.orderFlow.fillLatency.le6} · ≤12 {result.orderFlow.fillLatency.le12} · ≤24 {result.orderFlow.fillLatency.le24} · ≤48 {result.orderFlow.fillLatency.le48}</p>
@@ -832,6 +935,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
                 <div className={metricCard}><p className="text-xs text-muted-foreground">BE activated</p><p className="font-bold">{result.management.beRate}%</p></div>
                 <div className={metricCard}><p className="text-xs text-muted-foreground">Timeout</p><p className="font-bold">{result.management.timeoutRate}%</p></div>
                 <div className={metricCard}><p className="text-xs text-muted-foreground">Initial SL</p><p className="font-bold">{result.management.slRate}%</p></div>
+                <div className={metricCard} title="Median bars from fill to each target hit — target realism, not just hit rate"><p className="text-xs text-muted-foreground">Med bars → TP1 / TP2 / TP3</p><p className="font-bold text-sm">{result.management.medianBarsToTp1 ?? "—"} / {result.management.medianBarsToTp2 ?? "—"} / {result.management.medianBarsToTp3 ?? "—"}</p></div>
               </div>
             </Section>
             <Section title="Risk analysis">
@@ -847,10 +951,16 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </div>
 
           {/* ---------------- data quality ---------------- */}
-          <Section title="Data quality audit" subtitle="Historical feed sanity check (spec §18) — duplicate/out-of-order candles, gaps, invalid OHLC, plus dead-market weekend candle removal.">
+          <Section title="Data quality audit" subtitle="Historical feed sanity check (spec §18) — duplicate/out-of-order candles, gaps, invalid OHLC, plus dead-market weekend candle removal AND fetch accounting (requested vs received).">
             <p className={`text-xs ${result.dataQuality.ok ? "text-emerald-400" : "text-amber-400"}`}>{result.dataQuality.note}</p>
-            <div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-3 lg:grid-cols-7">
+            {(result.dataQuality.fetchShortfallPct ?? 0) > 10 && (
+              <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                Fetch shortfall {result.dataQuality.fetchShortfallPct}% — the upstream delivered less history than requested ({result.dataQuality.rawFetched} of {result.dataQuality.requestedBars} raw bars). Sample-size claims must use RECEIVED bars, not the selector value.
+              </p>
+            )}
+            <div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-3 lg:grid-cols-8">
               <div className={metricCard}><p className="text-[10px] text-muted-foreground">Bars traded</p><p className="font-bold">{result.dataQuality.bars}</p></div>
+              <div className={metricCard} title="Raw candles the upstream actually delivered (before weekend filtering) vs requested"><p className="text-[10px] text-muted-foreground">Raw fetched / req</p><p className="font-bold">{result.dataQuality.rawFetched ?? "—"}{result.dataQuality.requestedBars ? <span className="text-[10px] font-normal text-muted-foreground"> / {result.dataQuality.requestedBars}</span> : null}</p></div>
               <div className={metricCard} title="Weekend candles removed before the run (Sat + Sun before 22:00 UTC) — the raw feed quotes through closed hours"><p className="text-[10px] text-muted-foreground">Weekend dropped</p><p className="font-bold">{result.dataQuality.weekendCandles}</p></div>
               <div className={metricCard}><p className="text-[10px] text-muted-foreground">Duplicates</p><p className="font-bold">{result.dataQuality.duplicates}</p></div>
               <div className={metricCard}><p className="text-[10px] text-muted-foreground">Out of order</p><p className="font-bold">{result.dataQuality.outOfOrder}</p></div>

@@ -168,38 +168,62 @@ export function buildTargetLadder(input: TargetLadderInput): StructuralTarget[] 
 }
 
 export interface TradeTargets {
-  /** execution ladder: [nearest, second, FARTHEST] (spec §18-RR fix) */
+  /** execution ladder: [nearest, second, FARTHEST-within-horizon] */
   tp1: StructuralTarget | null;
   tp2: StructuralTarget | null;
   tp3: StructuralTarget | null;
-  /** RR of the farthest available structural level — the honest max */
+  /** RR of the farthest available structural level WITHIN the horizon cap */
   maxRR: number;
   /** RR of the nearest level (TP1) */
   rrToTp1: number;
-  full: StructuralTarget[]; // entire clustered ladder, nearest first
+  /** RR of the second level (TP2), 0 when absent */
+  rrToTp2: number;
+  /** RR of TP3 (farthest in-horizon), 0 when absent */
+  rrToTp3: number;
+  /** levels excluded from the execution ladder by the horizon cap */
+  capped: number;
+  full: StructuralTarget[]; // entire clustered ladder, nearest first (uncapped)
 }
 
 /**
  * Map the clustered ladder to the execution targets. TP3 is the FARTHEST
- * level (not the 3rd) so the runner leg reaches real liquidity, and the
- * minRR gate can honestly test "a structural target ≥ minRR exists".
+ * level WITHIN `maxTargetR × risk` of entry (0/unset = uncapped) so the
+ * runner leg reaches real but REACHABLE liquidity — a PDH 23R away is a
+ * landmark, not a target. The minRR gate then honestly tests "a structural
+ * target ≥ minRR exists within a realistic horizon".
  */
 export function selectTradeTargets(
   ladder: StructuralTarget[],
   entry: number,
-  riskPerUnit: number
+  riskPerUnit: number,
+  maxTargetR = 0
 ): TradeTargets {
   const rr = (t: StructuralTarget | null) =>
     t ? Math.abs(t.price - entry) / Math.max(1e-9, riskPerUnit) : 0;
-  const tp1 = ladder[0] ?? null;
-  const tp2 = ladder[1] ?? null;
-  const tp3 = ladder.length > 2 ? ladder[ladder.length - 1] : tp2 ?? tp1;
+  let usable = ladder;
+  let capped = 0;
+  if (maxTargetR > 0 && ladder.length > 0) {
+    usable = ladder.filter((t) => rr(t) <= maxTargetR);
+    capped = ladder.length - usable.length;
+    if (usable.length === 0) {
+      // every level is beyond the horizon — keep the nearest so a target
+      // still exists; the RR gate decides whether it is good enough
+      usable = [ladder[0]];
+      capped = ladder.length - 1;
+    }
+  }
+  const tp1 = usable[0] ?? null;
+  const tp2 = usable[1] ?? null;
+  const tp3 = usable.length > 2 ? usable[usable.length - 1] : tp2 ?? tp1;
   return {
     tp1,
     tp2,
     tp3,
-    maxRR: ladder.length ? rr(ladder[ladder.length - 1]) : 0,
-    rrToTp1: tp1 ? rr(tp1) : 0,
+    maxRR: usable.length ? rr(usable[usable.length - 1]) : 0,
+    rrToTp1: rr(tp1),
+    rrToTp2: tp2 ? rr(tp2) : 0,
+    rrToTp3: tp3 ? rr(tp3) : 0,
+    capped,
     full: ladder,
   };
 }

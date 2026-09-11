@@ -53,6 +53,7 @@ import type {
 import { detectSweeps, detectLiquidityPools } from "./liquidity";
 import { findSwings } from "./swings";
 import { detectFvg, detectOrderBlocks } from "./zones";
+import { roundTripCostR, DEFAULT_COSTS } from "./costs";
 import { structureWalkSeries } from "./structure";
 import { atrSeries, volRegimeSeries } from "./volatility";
 import { marketRegimeSeries, type RegimeSeries } from "./regime";
@@ -128,6 +129,14 @@ export interface EngineConfig {
   randomSeed: number;
   costs: Record<SymbolKey, CostModel>;
   riskMoney: number; // account currency risked per trade (1R)
+  /** reject setups whose round-trip cost exceeds this share of 1R (0 = off) */
+  maxCostPctOfR: number;
+  /** limit placed at the zone proximal edge (ICT default) or zone midpoint */
+  entryAnchor: "edge" | "midpoint";
+  /** fill the limit when price comes within this many R of it (0 = strict touch) */
+  entryToleranceR: number;
+  /** execution ladder ignores structural levels farther than this many R */
+  targetHorizonR: number;
 
   // statistical hygiene
   warmupBars: number;
@@ -187,6 +196,13 @@ export const DEFAULT_CONFIG: EngineConfig = {
   randomSeed: 42,
   costs: { XAUUSD: { spread: 0.3, slippagePerSide: 0.05, commissionPctPerSide: 0.00001 }, XAGUSD: { spread: 0.03, slippagePerSide: 0.01, commissionPctPerSide: 0.00001 } },
   riskMoney: 100,
+  // execution-cost awareness: on XAUUSD 15m a fixed ~$0.42 round trip is
+  // ~44% of gross edge when structural stops are tight — the gate rejects
+  // setups where costs would eat more than 35% of the risked R.
+  maxCostPctOfR: 0.35,
+  entryAnchor: "edge",
+  entryToleranceR: 0,
+  targetHorizonR: 8,
 
   warmupBars: 60,
   rangeLookbackBars: 96,
@@ -239,6 +255,9 @@ export interface RrDiagAccum {
   ge25: number;
   ge30: number;
   values: number[]; // capped sample of max available RR
+  tp1Values: number[]; // capped sample of RR to the nearest level
+  tp3Values: number[]; // capped sample of RR to the farthest in-horizon level
+  targetsCappedAccum: number; // levels excluded by the horizon cap
 }
 
 export interface DiagSink {
@@ -262,11 +281,20 @@ export interface DiagSink {
   zonesValid: number;
   pdOk: number;
   stopValid: number;
+  costRejected: number;
   targetsValid: number;
   rrOk: number;
   smtOk: number;
   kzOk: number;
   validSetups: number;
+  // order-block creation pipeline (Model C/D diagnosis)
+  obZonesCreated: number;
+  obZonesInvalidated: number;
+  obWindowSeen: number;
+  obSkipMitigated: number;
+  obSkipPosition: number;
+  obSkipSweepExtreme: number;
+  obSkipBlacklist: number;
   // rejection accounting
   rejections: Map<RejectionCode, number>;
   primary: Map<RejectionCode, number>;
@@ -284,10 +312,12 @@ function newDiagSink(): DiagSink {
     sweepBars: 0, structureBars: 0,
     candidates: 0, sweepsFound: 0, sweepsQuality: 0, structuresFound: 0,
     displacements: 0, fvgSeen: 0, obSeen: 0, zonesValid: 0, pdOk: 0,
-    stopValid: 0, targetsValid: 0, rrOk: 0, smtOk: 0, kzOk: 0, validSetups: 0,
+    stopValid: 0, costRejected: 0, targetsValid: 0, rrOk: 0, smtOk: 0, kzOk: 0, validSetups: 0,
+    obZonesCreated: 0, obZonesInvalidated: 0, obWindowSeen: 0,
+    obSkipMitigated: 0, obSkipPosition: 0, obSkipSweepExtreme: 0, obSkipBlacklist: 0,
     rejections: new Map(), primary: new Map(), byModel: new Map(),
     setupsBySession: new Map(),
-    rrDiag: { evaluated: 0, withTargets: 0, ge15: 0, ge20: 0, ge25: 0, ge30: 0, values: [] },
+    rrDiag: { evaluated: 0, withTargets: 0, ge15: 0, ge20: 0, ge25: 0, ge30: 0, values: [], tp1Values: [], tp3Values: [], targetsCappedAccum: 0 },
     samples: [],
     sampleCounter: 0,
   };
@@ -308,6 +338,7 @@ export const STAGE_DEPTH: Record<RejectionCode, number> = {
   INVALID_FVG: 7, INVALID_ORDER_BLOCK: 7, NO_RETRACEMENT: 7,
   WRONG_PREMIUM_DISCOUNT: 8,
   INVALID_STOP: 9,
+  EXCESSIVE_COST: 9,
   NO_STRUCTURAL_TARGET: 10, NO_LIQUIDITY: 10,
   INSUFFICIENT_RR: 11,
   SMT_REQUIRED_BUT_MISSING: 12,
@@ -327,6 +358,7 @@ export const STAGE_LABELS: Record<RejectionCode, string> = {
   NO_RETRACEMENT: "Retracement",
   WRONG_PREMIUM_DISCOUNT: "Premium/discount",
   INVALID_STOP: "Structural stop",
+  EXCESSIVE_COST: "Execution cost gate",
   NO_STRUCTURAL_TARGET: "Structural target", NO_LIQUIDITY: "Liquidity levels",
   INSUFFICIENT_RR: "Minimum RR",
   SMT_REQUIRED_BUT_MISSING: "SMT", DUPLICATE_SETUP: "Dedup",
@@ -482,12 +514,17 @@ export function buildSeriesContext(
     ordersExpired: 0, tradesClosed: 0,
   };
 
+  const diag = newDiagSink();
+  // OB creation pipeline — series-wide counts for the Model C/D diagnosis
+  diag.obZonesCreated = obZones.length;
+  for (const z of obZones) if (zoneMitigatedAt.has(z.id)) diag.obZonesInvalidated++;
+
   return {
     symbol, interval, candles, intervalSec, atrS, volRegimes, regime,
     structureEvents: walk.events, trendAt: walk.trendAt, biasAt,
     zones, zoneMitigatedAt, zoneCreatedIndex, zoneKind, zoneIndex,
     sweeps, pools, smtBullishAt, smtBearishAt, rangeAt, funnel, swingLadder,
-    diag: newDiagSink(),
+    diag,
   };
 }
 
@@ -811,19 +848,38 @@ function evaluateModel(
   for (const entry of zoneWindow) {
     const { zone, isFvg } = entry;
     if (zone.direction !== (wantBullish ? "BULLISH" : "BEARISH")) continue;
+    if (!isFvg) diag.obWindowSeen++;
     const mit = ctx.zoneMitigatedAt.get(zone.id);
-    if (mit !== undefined && mit <= i) continue; // silently skip mitigated
+    if (mit !== undefined && mit <= i) {
+      if (!isFvg) diag.obSkipMitigated++;
+      continue; // silently skip mitigated
+    }
     if (isFvg) fvgInWindow++;
     else obInWindow++;
     // order must rest beyond price: long → zone strictly below close
-    if (wantBullish && zone.top >= c.close) continue; // limit would cross / consumed
-    if (!wantBullish && zone.bottom <= c.close) continue;
+    if (wantBullish && zone.top >= c.close) {
+      if (!isFvg) diag.obSkipPosition++;
+      continue; // limit would cross / consumed
+    }
+    if (!wantBullish && zone.bottom <= c.close) {
+      if (!isFvg) diag.obSkipPosition++;
+      continue;
+    }
     // zone sane relative to the swept extreme
     if (sweepExtreme !== null) {
-      if (wantBullish && zone.bottom < sweepExtreme - 0.75 * atrI) continue;
-      if (!wantBullish && zone.top > sweepExtreme + 0.75 * atrI) continue;
+      if (wantBullish && zone.bottom < sweepExtreme - 0.75 * atrI) {
+        if (!isFvg) diag.obSkipSweepExtreme++;
+        continue;
+      }
+      if (!wantBullish && zone.top > sweepExtreme + 0.75 * atrI) {
+        if (!isFvg) diag.obSkipSweepExtreme++;
+        continue;
+      }
     }
-    if (cfg.sameZoneCooldown && cooldown.blacklistedZones.has(zone.id)) continue;
+    if (cfg.sameZoneCooldown && cooldown.blacklistedZones.has(zone.id)) {
+      if (!isFvg) diag.obSkipBlacklist++;
+      continue;
+    }
     const mid = (zone.top + zone.bottom) / 2;
     const inCorrectHalf = wantBullish ? mid < legEq.equilibrium : mid > legEq.equilibrium;
     const q = isFvg
@@ -909,7 +965,9 @@ function evaluateModel(
   if (cfg.requireDiscountPremium && !pdOk) return finish("WRONG_PREMIUM_DISCOUNT");
 
   // -- 5. entry / structural stop -------------------------------------------
-  const entry = wantBullish ? zone.top : zone.bottom; // proximal edge
+  // entryAnchor: proximal edge (ICT default) or zone midpoint (deeper limit,
+  // higher fill odds, worse average location — compareable via diagnostics)
+  const entry = cfg.entryAnchor === "midpoint" ? zoneMid : wantBullish ? zone.top : zone.bottom;
   partial.entry = entry;
   const buffer = 0.1 * atrI;
   let protectedExtreme: number;
@@ -930,6 +988,18 @@ function evaluateModel(
   if (riskPerUnit / entry > cfg.maxStopPctOfPrice) return finish("INVALID_STOP");
   diag.stopValid++;
 
+  // -- 5b. execution-feasibility gate: round-trip cost share of 1R ----------
+  // A fixed ~$0.42 round trip on XAUUSD eats 44% of gross edge when stops
+  // are tight. When the gate is on, setups that would donate more than
+  // maxCostPctOfR of their risk to costs are declined BEFORE the RR gate.
+  if (cfg.maxCostPctOfR > 0) {
+    const estCostR = roundTripCostR(cfg.costs[ctx.symbol] ?? DEFAULT_COSTS[ctx.symbol], entry, riskPerUnit);
+    if (estCostR > cfg.maxCostPctOfR) {
+      diag.costRejected++;
+      return finish("EXCESSIVE_COST");
+    }
+  }
+
   // -- 6. structural target ladder + minimum RR gate ------------------------
   diag.rrDiag.evaluated++;
   const prev = prevExtremes(candles, i, ctx.intervalSec);
@@ -943,7 +1013,8 @@ function evaluateModel(
     return finish(rawCandidateCount(candles, i, side, ctx.pools) === 0 ? "NO_LIQUIDITY" : "NO_STRUCTURAL_TARGET");
   }
   diag.rrDiag.withTargets++;
-  const tt = selectTradeTargets(ladderFull, entry, riskPerUnit);
+  const tt = selectTradeTargets(ladderFull, entry, riskPerUnit, cfg.targetHorizonR);
+  diag.rrDiag.targetsCappedAccum += tt.capped;
   partial.maxRr = round2(tt.maxRR);
   const rrSample = diag.rrDiag.values;
   if (rrSample.length < 4000) rrSample.push(round2(tt.maxRR));
@@ -951,6 +1022,8 @@ function evaluateModel(
   if (tt.maxRR >= 2) diag.rrDiag.ge20++;
   if (tt.maxRR >= 2.5) diag.rrDiag.ge25++;
   if (tt.maxRR >= 3) diag.rrDiag.ge30++;
+  if (diag.rrDiag.tp1Values.length < 4000) diag.rrDiag.tp1Values.push(round2(tt.rrToTp1));
+  if (diag.rrDiag.tp3Values.length < 4000) diag.rrDiag.tp3Values.push(round2(tt.maxRR));
   diag.targetsValid++;
   if (tt.maxRR < cfg.minRR) return finish("INSUFFICIENT_RR");
   diag.rrOk++;

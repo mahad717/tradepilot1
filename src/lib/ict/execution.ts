@@ -39,6 +39,8 @@ export interface ExecuteConfig {
   randomSeed: number;
   riskMoney: number;
   costs: CostModel;
+  /** fill the limit when price comes within this many R of it (0 = strict touch) */
+  entryToleranceR: number;
 }
 
 export interface ExecuteResult {
@@ -62,6 +64,8 @@ export interface PendingTelemetry {
   closestApproachR: number | null;
   /** zone invalidated (close beyond the far edge) inside the observation window */
   invalidatedDuringObservation: boolean;
+  /** true when the fill needed the tolerance margin (price never touched the limit) */
+  toleranceFill: boolean;
 }
 
 interface LegDraft {
@@ -133,8 +137,10 @@ export function simulateTrade(
   let fillPrice = entry;
   let endIndex = decidedIndex + 1;
   let ambiguousBars = 0;
+  let usedTolerance = false;
   // telemetry (observation only — never alters trading semantics)
   const OBS_HORIZON = 48;
+  const tolAbs = Math.max(0, cfg.entryToleranceR) * risk;
   let closestApproachR: number | null = null;
   let invalidatedDuringObservation = false;
   let lateFillBarOffset: number | null = null;
@@ -159,16 +165,20 @@ export function simulateTrade(
         trade: null,
         endIndex: j,
         ambiguousBars,
-        pending: { outcome: "invalidated", fillBarOffset: null, lateFillBarOffset: null, closestApproachR, invalidatedDuringObservation: true },
+        pending: { outcome: "invalidated", fillBarOffset: null, lateFillBarOffset: null, closestApproachR, invalidatedDuringObservation: true, toleranceFill: false },
       };
     }
-    const touched = long ? c.low <= entry : c.high >= entry;
-    if (touched) {
+    const strictTouch = long ? c.low <= entry : c.high >= entry;
+    // entry tolerance: a marketable limit with last-look fills when price
+    // comes within the tolerance margin of the limit — counted, never hidden
+    const toleranceTouch = !strictTouch && tolAbs > 0 && (long ? c.low <= entry + tolAbs : c.high >= entry - tolAbs);
+    if (strictTouch || toleranceTouch) {
+      usedTolerance = toleranceTouch;
       fillPrice = long ? Math.min(entry, c.open) : Math.max(entry, c.open);
       fillIndex = j;
       endIndex = j;
       audit.push({ time: c.time, event: "Entry became valid", detail: `limit order resting @ ${entry.toFixed(2)} since bar ${decidedIndex + 1}` });
-      audit.push({ time: c.time, event: "Entry filled", detail: `${setup.side} @ ${fillPrice.toFixed(2)}${fillPrice !== entry ? " (gapped fill, worse price)" : " (limit)"}` });
+      audit.push({ time: c.time, event: "Entry filled", detail: `${setup.side} @ ${fillPrice.toFixed(2)}${fillPrice !== entry ? " (gapped fill, worse price)" : " (limit)"}${toleranceTouch ? ` — TOLERANCE fill (price never touched the limit, approached within ${(cfg.entryToleranceR).toFixed(2)}R)` : ""}` });
       break;
     }
     endIndex = j;
@@ -196,7 +206,7 @@ export function simulateTrade(
       trade: null,
       endIndex,
       ambiguousBars,
-      pending: { outcome: "expired", fillBarOffset: null, lateFillBarOffset, closestApproachR, invalidatedDuringObservation },
+      pending: { outcome: "expired", fillBarOffset: null, lateFillBarOffset, closestApproachR, invalidatedDuringObservation, toleranceFill: false },
     };
   }
 
@@ -221,6 +231,9 @@ export function simulateTrade(
   let tp1Hit = false;
   let tp2Hit = false;
   let tp3Hit = false;
+  let barsToTp1: number | null = null;
+  let barsToTp2: number | null = null;
+  let barsToTp3: number | null = null;
   let mfeR = 0;
   let maeR = 0;
   let exitIndex = fillIndex;
@@ -252,9 +265,18 @@ export function simulateTrade(
       event: `${t.label} hit`,
       detail: `${(share * 100).toFixed(0)}% of position closed @ ${t.price.toFixed(2)} (+${round(((dir * (t.price - fillPrice)) / risk)).toFixed(2)}R raw) — remaining ${(remainingShare * 100).toFixed(0)}%`,
     });
-    if (t.label === "TP1") tp1Hit = true;
-    if (t.label === "TP2") tp2Hit = true;
-    if (t.label === "TP3") tp3Hit = true;
+    if (t.label === "TP1") {
+      tp1Hit = true;
+      if (barsToTp1 === null) barsToTp1 = j - fillIndex;
+    }
+    if (t.label === "TP2") {
+      tp2Hit = true;
+      if (barsToTp2 === null) barsToTp2 = j - fillIndex;
+    }
+    if (t.label === "TP3") {
+      tp3Hit = true;
+      if (barsToTp3 === null) barsToTp3 = j - fillIndex;
+    }
   };
 
   const closeAll = (j: number, price: number, label: TradeLeg["label"], kind: "stop" | "flat") => {
@@ -444,6 +466,10 @@ export function simulateTrade(
     exitIndex,
     barsHeld: exitIndex - fillIndex,
     beActivatedTime,
+    barsToTp1,
+    barsToTp2,
+    barsToTp3,
+    toleranceFill: usedTolerance,
     riskPerUnit: round(risk),
     positionSizeUnits: round(positionSizeUnits),
     riskMoney,
@@ -470,7 +496,7 @@ export function simulateTrade(
     audit,
   };
 
-  return { filled: true, trade, endIndex: exitIndex, ambiguousBars, pending: { outcome: "filled", fillBarOffset: fillIndex - decidedIndex, lateFillBarOffset: null, closestApproachR: 0, invalidatedDuringObservation: false } };
+  return { filled: true, trade, endIndex: exitIndex, ambiguousBars, pending: { outcome: "filled", fillBarOffset: fillIndex - decidedIndex, lateFillBarOffset: null, closestApproachR: 0, invalidatedDuringObservation: false, toleranceFill: usedTolerance } };
 }
 
 function classifyOutcome(

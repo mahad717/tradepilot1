@@ -310,6 +310,12 @@ export interface TradeRecord {
   exitIndex: number;
   barsHeld: number;
   beActivatedTime: number | null;
+  /** bars from fill to each TP hit — null when that TP never hit (target realism) */
+  barsToTp1: number | null;
+  barsToTp2: number | null;
+  barsToTp3: number | null;
+  /** true when the entry filled only because the tolerance margin was applied */
+  toleranceFill: boolean;
 
   // risk & size (spec #3)
   riskPerUnit: number; // price units — initial entry→initialStop distance
@@ -430,6 +436,7 @@ export type RejectionCode =
   | "OUTSIDE_SESSION"
   | "SMT_REQUIRED_BUT_MISSING"
   | "INVALID_STOP"
+  | "EXCESSIVE_COST"
   | "INSUFFICIENT_RR"
   | "DUPLICATE_SETUP"
   | "COOLDOWN"
@@ -458,6 +465,7 @@ export const REJECTION_LABELS: Record<RejectionCode, string> = {
   OUTSIDE_SESSION: "Outside selected sessions",
   SMT_REQUIRED_BUT_MISSING: "SMT required but missing",
   INVALID_STOP: "Invalid structural stop (too tight/wide)",
+  EXCESSIVE_COST: "Round-trip cost above gate (share of 1R)",
   INSUFFICIENT_RR: "Insufficient RR",
   DUPLICATE_SETUP: "Duplicate setup (event already traded)",
   COOLDOWN: "Cooldown (too soon after last signal)",
@@ -527,8 +535,18 @@ export interface RrDiagnostics {
   ge2_5: number;
   ge3: number;
   medianMaxRr: number | null;
+  /** median RR to the NEAREST structural level (TP1) — the realistic target */
+  medianTp1Rr: number | null;
+  /** median RR to the farthest level WITHIN the horizon cap (TP3) */
+  medianTp3Rr: number | null;
+  /** levels excluded from the execution ladder by the horizon cap */
+  targetsCapped: number;
   /** sample of max available RR values (capped length, for the histogram) */
   sample: number[];
+  /** sample of RR-to-TP1 values (capped length) */
+  tp1Sample: number[];
+  /** sample of RR-to-TP3 values (capped length) */
+  tp3Sample: number[];
 }
 
 /** Session-filter diagnostics (spec §10) — setups counted with NO session gate. */
@@ -550,6 +568,12 @@ export interface DataQuality {
   weekendCandles: number;
   ok: boolean;
   note: string;
+  // fetch accounting — how much of the requested window actually arrived
+  requestedBars?: number;
+  rawFetched?: number;
+  fetchRequests?: number;
+  /** > 0 when the upstream delivered meaningfully less than requested */
+  fetchShortfallPct?: number;
 }
 
 /**
@@ -570,6 +594,27 @@ export interface OrderFlowSummary {
   fillRateAt: { bars6: number | null; bars12: number | null; bars24: number | null; bars48: number | null };
   /** expired orders: how close price came to the entry (in R), median */
   medianClosestApproachR: number | null;
+  /** fills that happened only because the entry-tolerance margin was applied */
+  toleranceFills: number;
+  note: string;
+}
+
+/** Order-Block creation pipeline — where Model C/D candidates actually die. */
+export interface ObPipeline {
+  /** OB zones created by the detector over the whole series */
+  zonesCreated: number;
+  /** of those, invalidated (close through midpoint) anywhere in the series */
+  zonesInvalidated: number;
+  /** OBs encountered inside candidate zone windows (before skip reasons) */
+  windowSeen: number;
+  skippedMitigated: number;
+  skippedPosition: number; // limit would cross / zone consumed by price
+  skippedSweepExtreme: number; // insane vs the swept extreme
+  skippedBlacklist: number; // same-zone cooldown after a loss
+  /** candidates left with ≥1 usable OB in window (post-skip) */
+  candidatesWithOb: number;
+  /** candidates that passed every gate per Model C (context) */
+  modelCValidSetups: number;
   note: string;
 }
 
