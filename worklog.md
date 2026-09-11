@@ -129,3 +129,25 @@ Work Log:
 
 Stage Summary:
 - Improvement plan delivered: P0 bugs (OB detector, weekend candles, equity x-axis, model-rejection attribution UX), P1 diagnostics (expiry funnel, ambiguity counter, SMT N/A, cost flag, inspector sampling), P2 statistics (deep-history fetch for 100+ trades before any tuning).
+
+---
+Task ID: 9
+Agent: Super Z (main agent)
+Task: "Do the recommendation" — implement P0 bug fixes, P1 diagnostics gaps, P2 deep history.
+
+Work Log:
+- Baseline captured BEFORE changes via local dev API (v4-*-before.json): 5000b=19 trades +0.77R PF 1.21; 1500b=3 trades 0R.
+- zones.ts: OB per-bar ATR (factor 1.2 at displacement bar, was 0.84x series median), invalidation = CLOSE through midpoint (was wick touch). sequence.ts: caller + split mitigation map (FVG keeps touch-freshness rule).
+- market layer: isWeekendCandle/dropWeekendCandles (Sat + Sun<22:00 UTC) applied to backtest + silver feed; twelvedata.ts fetchCandlesRangeLive (end_date pagination, 15-min deep cache, 8-request budget); getCandlesDeep; backtest bars cap 25000.
+- execution.ts: PendingTelemetry (fill latency, late fills beyond expiry via observation-only 48-bar horizon, closest approach in R — fixed a sign inversion found by its own test), ambiguousBars counter.
+- diagnostics.ts: model-conditional rejections (STAGE_DEPTH>=6), summarizeOrderFlow.
+- validate.ts: 14th test "Pending-order telemetry".
+- UI: merged robustness/sample verdict banner; time-scaled step equity curve with markers; zone-stage rejections column; pending-order flow panel + collision counter; SMT N/A grey-out; cost R column + >30% cost warning; weekend-dropped audit card; deep history options (10000/15000/25000).
+- Verified: 14/14 self-tests, tsc+eslint clean on touched files, agent-browser golden path (dashboard -> Backtesting -> run -> new panels render).
+- AFTER (same window): 5000 raw bars 19->23 trades, +0.77->+1.03R, PF 1.21->1.14, exp identical +0.04R; 1500b: 3->6 trades, 0->-1.3R (honest loss). Deep 15000 requested -> 10952 weekday bars (~5 months): 69 trades, 58% WR, +0.18R exp, PF 2.0, DD 3.64R, 4/5 WF periods positive, OOS +5.15R, flags GREEN (MODERATE sample). Costs 39-70% of gross across runs.
+- Committed 6a3368c, pushed (Cloudflare CI deploys).
+
+Stage Summary:
+- Model C/OB still nearly zero-trades (NO_ORDER_BLOCK window rejections now VISIBLE per model); not tuned — funnel shows the constraint honestly.
+- Expiry diagnostics show 26/93 expired orders touched AFTER the window; median closest approach 0.12R on deep run.
+- Deep runs take ~50s first call (fetch+compute) then cached; Workers CPU limit is the deployment-side risk for 25000 bars.
