@@ -113,3 +113,19 @@ Stage Summary:
   backtest API route + 3 terminal components; artifacts in scripts/after-*.json.
 - After-run (§15): Before 1 trade/+0.08R → After 19 trades/+0.77R with full diagnostics; the
   remaining constraint is genuinely selective ICT logic + honest small-sample warnings.
+
+---
+Task ID: 8
+Agent: Super Z (main agent)
+Task: Review deployed diagnostics (user screenshots) and answer "What needs to be improved".
+
+Work Log:
+- Inspected 5 full-page screenshots of live terminal (1500-bar and 5000-bar XAUUSD runs).
+- Verified equity-curve "straight line" is coincidental data (win +2.16R then losses -1.04/-1.12R) + index-based x-axis.
+- Confirmed per-model top-rejection lists identical for A/C/D = shared precondition gates, not a wiring bug, but zero information.
+- Found OB detection effectively dead (26/10464 candidates; Models C/D 0 trades): body >= 0.84*medianATR single scalar for whole series, midpoint-wick-touch mitigation, narrow creation window.
+- LIVE API probe: feed continuous at ~96 bars/calendar-day, gaps=0, candles on Saturday -> weekend candles present; kill-zone/session logic exposed to dead-market bars.
+- Noted 11/14 (79%) orders expire unfilled; ambiguity models identical (0 same-candle collisions, uncounted); SMT hard-disabled (silver unavailable); costs = 1.73R vs 3.66R gross (47%).
+
+Stage Summary:
+- Improvement plan delivered: P0 bugs (OB detector, weekend candles, equity x-axis, model-rejection attribution UX), P1 diagnostics (expiry funnel, ambiguity counter, SMT N/A, cost flag, inspector sampling), P2 statistics (deep-history fetch for 100+ trades before any tuning).
