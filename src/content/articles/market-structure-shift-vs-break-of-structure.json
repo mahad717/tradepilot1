@@ -1,0 +1,38 @@
+{
+  "slug": "market-structure-shift-vs-break-of-structure",
+  "title": "MSS vs BOS: The Two Structure Breaks Every ICT Trader Must Separate",
+  "seoTitle": "MSS vs BOS: Market Structure Shift & Break of Structure Explained | TradePilot",
+  "seoDescription": "A break of structure continues a trend; a market structure shift reverses it. Learn to read MSS and BOS on XAUUSD and XAGUSD with clear, rule-based definitions.",
+  "excerpt": "BOS and MSS both mean \"price broke a swing\" — but one confirms continuation and the other signals reversal. Confusing the two is one of the most common structural reading mistakes.",
+  "category": "Market Structure",
+  "tags": ["MSS", "BOS", "market structure", "ICT", "XAUUSD"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-01-29",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 6,
+  "content": [
+    { "type": "p", "text": "Market structure is the skeleton under every price chart: the sequence of highs and lows that tells you whether buyers or sellers currently control the tape. Within ICT methodology, two specific structure events matter most — the **break of structure (BOS)** and the **market structure shift (MSS)**. They look identical at first glance (a swing level gets broken), but they mean opposite things, and trading the wrong one is expensive." },
+    { "type": "diagram", "id": "market-structure", "caption": "A BOS breaks the swing in the direction of the trend; an MSS breaks structure against it, flipping the working bias." },
+    { "type": "h2", "text": "Break of structure: continuation" },
+    { "type": "p", "text": "A **BOS** occurs when price, in an established uptrend, closes above the most recent significant higher high — or, in a downtrend, below the most recent significant lower low. The break travels **with** the prevailing trend and confirms that the current directional flow remains intact. Structurally it tells you: pullback over, trend resuming, look for continuation entries — typically into a [fair value gap](/blog/what-is-a-fair-value-gap) or [order block](/blog/what-is-an-order-block) formed during the last pullback." },
+    { "type": "h2", "text": "Market structure shift: reversal" },
+    { "type": "p", "text": "An **MSS** occurs when price breaks the most recent swing **against** the prevailing trend — for example, when an uptrend that has been printing higher highs and higher lows suddenly closes below its last higher low. This is the structure event that flips the working bias. In the classic ICT reversal model, the MSS follows a [liquidity sweep](/blog/what-is-a-liquidity-sweep): stops are taken beyond the obvious level, and the strong move back through the prior swing is the market's way of demonstrating that control has changed hands." },
+    { "type": "callout", "variant": "info", "title": "The sweep + MSS pairing", "text": "An MSS that occurs after a sweep of a meaningful liquidity pool is the single most important confirmation event in the model TradePilot trades. An MSS with no sweep behind it is far more likely to fail." },
+    { "type": "h2", "text": "The distinction in one table" },
+    { "type": "list", "items": [
+      "**Direction relative to trend:** BOS breaks *with* the trend; MSS breaks *against* it.",
+      "**What it confirms:** BOS confirms continuation; MSS signals a potential reversal.",
+      "**Typical context:** BOS follows a pullback in trend; MSS follows a liquidity sweep at an extreme.",
+      "**Trading response:** after BOS, seek continuation entries; after MSS, wait for the retrace and seek reversal entries."
+    ] },
+    { "type": "h2", "text": "Choosing the swing that matters" },
+    { "type": "p", "text": "Structure reading fails most often on swing selection. Internal noise produces dozens of minor breaks that mean nothing. Practical fixes: define structure on a higher timeframe (15-minute or 1-hour for intraday gold and silver trading), mark the swings formed **between** the liquidity pools rather than every candle pivot, and require a **candle body close** beyond the swing — wicks through a level are probes, not breaks. This is the same hierarchy our engine uses when classifying structure events on [XAUUSD](/xauusd) and [XAGUSD](/xagusd)." },
+    { "type": "h2", "text": "Structure across timeframes" },
+    { "type": "p", "text": "A 5-minute MSS against a 1-hour uptrend is a counter-trend scalp, not a reversal call. The working rule: **the MSS is only as significant as the timeframe of the swing it breaks**. TradePilot's analysis always anchors on a higher-timeframe bias and treats lower-timeframe structure events as entry timing, not as standalone signals — a discipline that becomes obvious once you study [premium and discount](/blog/premium-and-discount-explained) positioning across timeframes." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/blog/what-is-a-liquidity-sweep", "text": "What is a liquidity sweep?" },
+      { "href": "/ict-strategy", "text": "The full ICT trading model" },
+      { "href": "/ict-backtesting", "text": "Backtesting these rules on gold & silver" }
+    ] }
+  ]
+}

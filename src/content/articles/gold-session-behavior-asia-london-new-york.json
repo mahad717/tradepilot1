@@ -1,0 +1,40 @@
+{
+  "slug": "gold-session-behavior-asia-london-new-york",
+  "title": "Gold Session Behavior: How XAUUSD Acts in Asia, London and New York",
+  "seoTitle": "Gold Session Behavior: Asia, London & New York XAUUSD Guide | TradePilot",
+  "seoDescription": "XAUUSD behaves differently in each session: Asia builds ranges, London sweeps them, New York delivers trends and reversals. Learn the session map ICT traders use on gold.",
+  "excerpt": "Gold is not a 24-hour market in character — it is three markets stitched together. Here is how XAUUSD typically behaves through the Asian, London and New York sessions, and why it matters.",
+  "category": "Sessions",
+  "tags": ["sessions", "kill zones", "XAUUSD", "gold", "ICT"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-02-26",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 8,
+  "content": [
+    { "type": "p", "text": "Ask two traders what gold \"does\" and you may get opposite answers, because they are probably trading different sessions. XAUUSD is not one uniform market — it is three overlapping markets with different participants, different liquidity profiles and different personalities. Learning the session map is one of the highest-leverage upgrades an intraday gold trader can make." },
+    { "type": "h2", "text": "Asia (roughly 19:00–03:00 ET): the architect" },
+    { "type": "p", "text": "The Asian session is the quietest period for gold, dominated by regional flows and thinner institutional participation. Price typically **consolidates in a narrow range**, often centered around a level of balance from the prior New York afternoon. For the ICT-minded trader, Asia's job is construction: its high and low become the first meaningful [liquidity pools](/blog/what-is-a-liquidity-sweep) that later sessions will test. Breakouts during Asian hours are notoriously unreliable precisely because the liquidity to sustain them is absent — most Asian \"breakouts\" simply deliver price to the other side of the range before mean-reverting." },
+    { "type": "h2", "text": "London (03:00–06:00 ET): the raider" },
+    { "type": "p", "text": "The London open is where gold's personality changes. European bank flow arrives, spreads tighten, and the session frequently opens with a **raid on the Asian range**: a sweep of the Asian low followed by reversal (or the high, in bearish days) as stops resting beyond the range are absorbed. This London sweep-and-reverse is among the most studied ICT patterns on gold, and it explains why so many Asian-range breakout traders get chopped. The strongest moves of the day often start here — but so do the sharpest fakeouts." },
+    { "type": "callout", "variant": "info", "title": "Kill Zones", "text": "ICT calls these windows Kill Zones: the London Open Kill Zone (~02:00–05:00 ET) and the New York Open Kill Zone (~07:00–10:00 ET). They are not magic hours — they are simply the periods when institutional order flow makes setups worth taking actually resolve, instead of drifting." },
+    { "type": "h2", "text": "New York (07:00–11:00 ET): the decider" },
+    { "type": "p", "text": "New York brings U.S. data — CPI, NFP, FOMC, ISM — and with it the day's largest volume. Two typical constructions exist. In a **Judas swing day**, price runs the London direction first, sweeps an early New York level, then reverses into the true daily trend. In a **continuation day**, the London move retraces briefly into a [fair value gap](/blog/what-is-a-fair-value-gap) or [order block](/blog/what-is-an-order-block) and resumes. After roughly 11:00 ET, gold's intraday edge decays quickly: lunchtime liquidity thins, ranges compress, and setups that would have resolved cleanly at 9:30 instead chop. Most intraday ICT traders on gold simply stop trading the afternoon." },
+    { "type": "h2", "text": "A session-based daily workflow" },
+    { "type": "list", "items": [
+      "**Pre-Asia:** mark the previous day's high/low, weekly open and any daily-level [premium/discount](/blog/premium-and-discount-explained) boundaries.",
+      "**End of Asia:** record the Asian high and low — these are the day's first pools. Note where price sits inside the prior day's range.",
+      "**London open:** watch how the range breaks. A sweep that fails to find acceptance beyond the Asian extreme is a signal to prepare for the reversal model — not to chase the breakout.",
+      "**New York open:** evaluate whether London's move was Judas or genuine, check [XAU/XAG SMT divergence](/blog/smt-divergence-between-gold-and-silver) at the key levels, and trade only what the model defines.",
+      "**After 11:00 ET:** journal, review, and let the market build tomorrow's ranges."
+    ] },
+    { "type": "h2", "text": "News is a session property, not an afterthought" },
+    { "type": "p", "text": "Because U.S. data releases land inside the New York Kill Zone, session awareness and news awareness are the same discipline. Gold's reaction to CPI is not a tradable \"setup\" in itself — spreads blow out, slippage spikes and levels stop meaning anything for the first seconds. The practical rule most systematic traders adopt: no entries in the minutes immediately around releases; let the initial volatility sweep a level and *then* trade the model's response to it." },
+    { "type": "h2", "text": "Sessions inside TradePilot" },
+    { "type": "p", "text": "Session context is built into the engine: pools, sweeps and signals are all timestamped against the Asian/London/New York map, and the quality score reflects whether a setup formed inside a Kill Zone. You can see the session tagging on every [XAUUSD signal](/xauusd-signals) and [XAGUSD signal](/xagusd-signals), and study how session timing affected historical performance in our [backtesting results](/ict-backtesting)." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/gold-analysis", "text": "Gold price analysis framework" },
+      { "href": "/blog/how-to-backtest-xauusd-strategies", "text": "How to backtest XAUUSD strategies" },
+      { "href": "/ict-strategy", "text": "The ICT trading strategy guide" }
+    ] }
+  ]
+}

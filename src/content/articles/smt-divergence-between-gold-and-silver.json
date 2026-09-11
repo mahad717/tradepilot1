@@ -1,0 +1,36 @@
+{
+  "slug": "smt-divergence-between-gold-and-silver",
+  "title": "SMT Divergence Between Gold and Silver: Reading the Metals Together",
+  "seoTitle": "SMT Divergence: XAUUSD vs XAGUSD Correlation Explained | TradePilot",
+  "seoDescription": "SMT divergence compares correlated markets like gold and silver. When one makes a new high and the other doesn't, something is off. Learn to read XAU/XAG SMT with rules.",
+  "excerpt": "Gold and silver usually move together. When one sweeps a high while the other fails to follow, that split — SMT divergence — often marks turning points in both metals.",
+  "category": "SMT Divergence",
+  "tags": ["SMT divergence", "XAUUSD", "XAGUSD", "correlation", "ICT"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-02-12",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 7,
+  "content": [
+    { "type": "p", "text": "The precious metals complex is one of the most correlated pairs of markets you can watch. Gold and silver respond to the same dollar dynamics, the same real-yield expectations and the same risk sentiment — so when the two suddenly **disagree**, it is information. That disagreement is what ICT methodology calls **SMT divergence** (Smart Money Technique divergence)." },
+    { "type": "diagram", "id": "smt-divergence", "caption": "Gold prints a higher high while silver fails — a bearish SMT divergence warning that gold's push may be running on fumes." },
+    { "type": "h2", "text": "What SMT divergence is" },
+    { "type": "p", "text": "SMT divergence occurs when two normally correlated markets take different paths at a critical level. The classic bearish example on the metals: **XAUUSD sweeps above its prior high** while **XAGUSD fails to make a corresponding new high**. Gold's push, in other words, happened without silver's participation — a warning that the move may be driven by a thinning order book rather than broad buying across the complex. The bullish mirror works identically at lows." },
+    { "type": "p", "text": "It is worth being honest about the mechanism. The divergence does not *cause* the reversal, and no one can prove what institutional positioning produced it. What traders observe empirically is that correlated markets frequently synchronize again shortly after diverging, and that the synchronizing move often comes with a violent reversal of the laggard's opposite. That observable pattern is what gets encoded into rules." },
+    { "type": "h2", "text": "Why gold and silver are ideal for SMT" },
+    { "type": "list", "items": [
+      "**Deep structural correlation.** Both metals trade against the dollar index and real yields, keeping their intraday structure tightly linked most sessions.",
+      "**Shared liquidity events.** London and New York opens, CPI and FOMC releases move both metals simultaneously — the moments when divergence is most meaningful.",
+      "**Silver's amplified behavior.** Silver is smaller and more volatile; when it declines to confirm a gold sweep, the miss is usually unambiguous rather than marginal."
+    ] },
+    { "type": "h2", "text": "Reading XAU/XAG SMT in practice" },
+    { "type": "p", "text": "The workflow is deliberately simple. Mark the session or swing highs and lows on both charts. When gold trades beyond its level, immediately check silver: did it make its corresponding new extreme? If yes — the move is confirmed across the complex, no divergence. If silver **fails** — and especially if silver then starts reversing first — you have a bearish SMT at gold's high. The setup then follows the standard model: wait for the [MSS](/blog/market-structure-shift-vs-break-of-structure) on gold, refine the entry into a [fair value gap](/blog/what-is-a-fair-value-gap) or [order block](/blog/what-is-an-order-block), and manage risk from there." },
+    { "type": "callout", "variant": "warning", "title": "Divergence is context, not entry", "text": "SMT tells you to pay closer attention — it does not tell you to click sell. Divergences can persist and widen while one market keeps trending. Treat SMT as a filter that raises the quality bar for setups your directional model already produced." },
+    { "type": "h2", "text": "How TradePilot uses SMT" },
+    { "type": "p", "text": "The engine monitors XAUUSD and XAGUSD jointly and flags SMT divergence as a **context modifier** in signal generation: a sweep-and-shift setup that coincides with SMT divergence scores higher than the same setup without it. The comparison is shown transparently on every [XAUUSD signal](/xauusd-signals) and [XAGUSD signal](/xagusd-signals), and the contribution of SMT to historical performance is measurable in our [backtests](/ict-backtesting) — consistent with our principle that every rule must earn its place in the model." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/blog/gold-session-behavior-asia-london-new-york", "text": "Gold session behavior guide" },
+      { "href": "/silver-analysis", "text": "Silver price analysis framework" },
+      { "href": "/ict-concepts", "text": "ICT concepts glossary" }
+    ] }
+  ]
+}

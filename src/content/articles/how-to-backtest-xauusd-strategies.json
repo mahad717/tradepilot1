@@ -1,0 +1,41 @@
+{
+  "slug": "how-to-backtest-xauusd-strategies",
+  "title": "How to Backtest XAUUSD Strategies (Without Fooling Yourself)",
+  "seoTitle": "How to Backtest XAUUSD Strategies: A Practical ICT Guide | TradePilot",
+  "seoDescription": "Learn how to backtest ICT strategies on XAUUSD correctly: bar replay, avoiding look-ahead bias, sample sizes, and measuring expectancy instead of win rate.",
+  "excerpt": "Backtesting converts opinions into data — but only if you avoid look-ahead bias and measure the right numbers. A practical workflow for testing ICT rules on gold.",
+  "category": "Backtesting",
+  "tags": ["backtesting", "XAUUSD", "ICT", "expectancy", "bar replay"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-02-19",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 9,
+  "featured": true,
+  "content": [
+    { "type": "p", "text": "A backtest is the cheapest tuition you will ever pay the market. Instead of discovering that your setup fails in trending sessions through live losses, you discover it in a few evenings with historical data. But a badly built backtest is worse than none at all, because it manufactures confidence in a strategy that does not work. This guide walks through a practical, honest workflow for backtesting ICT-style rules on XAUUSD." },
+    { "type": "h2", "text": "Step 1: Write the rules before touching history" },
+    { "type": "p", "text": "Every condition must be binary — something a stranger could evaluate identically on the same chart. \"A nice sweep of the lows\" is not a rule; \"a candle trading below the two-candle equal low, then closing back above it within 3 candles\" is. Write down: the liquidity pool definition, the sweep definition, the confirmation ([MSS](/blog/market-structure-shift-vs-break-of-structure)) requirement, the entry trigger, the stop placement, and the exit rules. If any clause requires judgment, you have not finished writing the strategy." },
+    { "type": "h2", "text": "Step 2: Use bar replay, not hindsight scrolling" },
+    { "type": "p", "text": "The single most damaging testing error is **look-ahead bias** — evaluating decisions with information the trader would not have had at the time. When you scroll a completed gold chart and mark \"obvious\" sweeps, you are using the future to explain the past. Bar replay solves this structurally: the chart reveals one candle at a time, and you must make each decision with only the history visible up to that point. Every rule that survives replay testing has passed a far more honest exam than anything marked on a finished chart." },
+    { "type": "callout", "variant": "warning", "title": "The subtle look-ahead traps", "text": "Three traps survive even in replay mode: using session levels computed from data later in the day, marking equal highs/lows that only became \"equal\" after later candles formed, and entering on a candle's close you could not have known was a close yet. Timestamps discipline — note the exact candle you acted on — keeps these honest." },
+    { "type": "h2", "text": "Step 3: Collect enough samples — and the right ones" },
+    { "type": "p", "text": "Ten trades tell you almost nothing; a [fair value gap](/blog/what-is-a-fair-value-gap) strategy that wins 7 of 10 might just have met a friendly two weeks. Aim for a minimum of 100–200 samples spanning different regimes: trending months, choppy months, high-impact news periods, and at least a year of calendar time so session effects average out. Log every trade in a spreadsheet: date, session, setup grade, entry, stop, outcome, and — critically — a screenshot. The screenshots are how you audit yourself later." },
+    { "type": "h2", "text": "Step 4: Measure expectancy, not win rate" },
+    { "type": "p", "text": "Win rate alone is nearly meaningless. A setup that wins 70% of the time but loses 3R on each failure loses money. The number that matters is **expectancy**:" },
+    { "type": "p", "text": "Expectancy = (win rate × average win in R) − (loss rate × average loss in R). A 40% win rate with 2.5R winners and 1R losers yields 0.4×2.5 − 0.6×1 = **0.4R per trade** — a viable edge. A 60% win rate with 0.5R winners and 1R losers yields −0.3R — a slow bleed. Track alongside it: maximum drawdown, profit factor, and performance by session and by setup grade, because aggregated numbers routinely hide a strategy that only works in London." },
+    { "type": "h2", "text": "Step 5: Stress the result before trusting it" },
+    { "type": "list", "items": [
+      "**Include realistic costs.** Gold spreads widen around news; a 2-pip assumption during NFP is fantasy. Add slippage and commission per trade.",
+      "**Check parameter sensitivity.** If requiring the close-back-inside within 1 candle works but within 3 candles fails, you have curve-fit noise, not an edge.",
+      "**Forward-test.** Run the rules on data outside your sample, then on a demo or minimum-size live account. Forward performance is the final exam.",
+      "**Respect regime change.** An edge validated on 2019–2021 gold may decay; edges require maintenance testing, not one certification."
+    ] },
+    { "type": "h2", "text": "How TradePilot backtests for you" },
+    { "type": "p", "text": "Our [ICT backtesting engine](/ict-backtesting) implements exactly this discipline for the sweep–MSS–retrace model: timestamped bar-by-bar evaluation, no look-ahead, cost modeling included, and results reported in expectancy and drawdown — never as win-rate marketing. Every [XAUUSD signal](/xauusd-signals) is scored against those historical results, so you always know how a setup's rules performed when tested honestly. And the same workflow applies if you prefer to [backtest XAGUSD](/xagusd-signals) strategies on silver." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/ict-backtesting", "text": "The TradePilot backtesting engine" },
+      { "href": "/blog/what-is-a-liquidity-sweep", "text": "What is a liquidity sweep?" },
+      { "href": "/ict-concepts", "text": "ICT concepts glossary" }
+    ] }
+  ]
+}

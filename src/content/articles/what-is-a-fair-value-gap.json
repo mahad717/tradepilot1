@@ -1,0 +1,45 @@
+{
+  "slug": "what-is-a-fair-value-gap",
+  "title": "What Is a Fair Value Gap (FVG)? Price Inefficiencies Explained",
+  "seoTitle": "What Is a Fair Value Gap (FVG)? ICT FVG Concept Explained | TradePilot",
+  "seoDescription": "A fair value gap is a three-candle inefficiency left by strong displacement. Learn how FVGs form on XAUUSD and XAGUSD, how to validate them, and how to use them for entries.",
+  "excerpt": "Fair value gaps form when a strong impulsive candle leaves a hole in the order flow. Here is how to identify FVGs correctly on gold and silver, and which ones actually deserve your attention.",
+  "category": "Price Action",
+  "tags": ["fair value gap", "FVG", "imbalance", "ICT", "XAUUSD"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-01-15",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 7,
+  "featured": true,
+  "content": [
+    { "type": "p", "text": "A **fair value gap (FVG)** — sometimes called an imbalance or inefficiency — is the empty zone a strong impulsive move leaves behind on a chart. In ICT methodology it is one of the most-used entry references, because it marks the price area where the market moved so quickly that two-sided trade never really occurred. When price later returns to that area, traders watch for a reaction." },
+    { "type": "diagram", "id": "fair-value-gap", "caption": "The gap between candle one's high and candle three's low is the FVG — created by the displacement of candle two." },
+    { "type": "h2", "text": "How a fair value gap forms" },
+    { "type": "p", "text": "The definition is mechanical and takes three candles. Label them 1, 2 and 3 in the direction of the move:" },
+    { "type": "list", "items": [
+      "**Candle 1** is the last candle of the old move (for a bullish FVG, a bearish or neutral candle).",
+      "**Candle 2** is a strong displacement candle that travels in the new direction with real body and momentum.",
+      "**Candle 3** opens and fails to reach candle 1's extreme. The space between **candle 1's high** and **candle 3's low** (bullish case) is the FVG."
+    ] },
+    { "type": "p", "text": "If candle 3 wicks back into candle 1's range, no gap exists — there is no inefficiency, and no FVG. This is worth stating explicitly because most \"FVG failures\" people complain about are actually gaps they drew incorrectly, usually by ignoring wicks or drawing on the wrong timeframe." },
+    { "type": "h2", "text": "Why the market returns to the gap" },
+    { "type": "p", "text": "Several explanations circulate: unfilled resting orders, algorithmic mean-reversion toward fair value, and plain old profit-taking near the origin of a move. The honest answer is that we observe the **tendency** — price frequently retraces into inefficiencies — without pretending to know the exact cause. For a rule-based trader the cause is irrelevant; the repeated behavior is what gets encoded and backtested." },
+    { "type": "p", "text": "What matters practically: after the retrace, does the market react? A gap that price slices through without slowing down was not respected. A gap that produces an immediate response — a rejection candle, a structure shift — is acting as a support/resistance reference and validates the setup." },
+    { "type": "h2", "text": "Not all FVGs are equal" },
+    { "type": "p", "text": "On a fast-moving gold session you can mark a dozen gaps, most of which mean nothing. Filters that separate useful FVGs from noise:" },
+    { "type": "list", "items": [
+      "**Origin quality.** The best gaps launch from an engineered level — after a [liquidity sweep](/blog/what-is-a-liquidity-sweep) or at the edge of an [order block](/blog/what-is-an-order-block), not in the middle of nowhere.",
+      "**Alignment with the higher timeframe.** A 5-minute bullish FVG that sits inside a 1-hour [discount zone](/blog/premium-and-discount-explained) carries far more weight than the same gap in premium.",
+      "**Displacement size.** The candle that creates the gap should be decisively larger than recent candles. Small gaps from weak candles fill trivially.",
+      "**Session.** Gaps created during the London or New York sessions reflect real order flow; gaps from the Asian lunch hour often just reflect thin liquidity."
+    ] },
+    { "type": "callout", "variant": "warning", "title": "Entry, not signal", "text": "An FVG alone is an entry refinement, not a trading signal. Sweeping into a gap because \"gaps fill\" — without a directional model — is a coin flip with extra steps." },
+    { "type": "h2", "text": "Using FVGs inside a full model" },
+    { "type": "p", "text": "In the sweep–MSS–retrace model used across TradePilot, the FVG is the **retrace leg**: once a sweep has occurred and a market structure shift confirms reversal, the FVG formed by the displacement leg defines the zone where an entry is sought with a stop just beyond the sweep extreme. This sequencing is what turns a generic chart annotation into a testable setup — you can read the full process in our [ICT strategy guide](/ict-strategy) or explore [how we backtest it](/ict-backtesting)." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/blog/what-is-an-order-block", "text": "What is an Order Block?" },
+      { "href": "/ict-concepts", "text": "Full ICT concepts glossary" },
+      { "href": "/xauusd-signals", "text": "How XAUUSD signals apply these concepts" }
+    ] }
+  ]
+}

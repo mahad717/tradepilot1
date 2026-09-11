@@ -1,0 +1,51 @@
+{
+  "slug": "what-is-a-liquidity-sweep",
+  "title": "What Is a Liquidity Sweep? Stops, Resting Orders and Reversals",
+  "seoTitle": "What Is a Liquidity Sweep? ICT Liquidity Concepts Explained | TradePilot",
+  "seoDescription": "A liquidity sweep triggers clusters of stop losses beyond obvious highs and lows before price reverses. Learn how sweeps work on XAUUSD and XAGUSD, and how to trade them with rules.",
+  "excerpt": "Liquidity sweeps explain why price often pierces an obvious high or low and then reverses immediately. Here is what is actually happening under the surface — and how to turn that behavior into a rule-based setup.",
+  "category": "Liquidity",
+  "tags": ["liquidity sweep", "stop hunt", "ICT", "smart money concepts", "XAUUSD"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-01-08",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 8,
+  "featured": true,
+  "content": [
+    { "type": "p", "text": "If you have traded gold or silver for more than a few weeks, you have probably experienced this: price grinds toward an obvious swing low, briefly pokes below it, and then rallies hard without you. That is not bad luck. In most cases it was a **liquidity sweep** — the market absorbing resting orders on the other side before continuing in the opposite direction." },
+    { "type": "p", "text": "Understanding sweeps is one of the most practical shifts you can make, because it reframes breakouts, stop-outs and reversals as parts of a single mechanical process rather than random noise. This guide explains what a liquidity sweep is, why it happens, and how to build a rule-based response around it." },
+    { "type": "h2", "text": "What is liquidity in a trading market?" },
+    { "type": "p", "text": "Liquidity is simply the pool of pending orders sitting at and around a price level. Every visible swing high, swing low, trendline and round number attracts two types of resting orders: **stop losses** from traders who are positioned against the level, and **entry orders** from traders who expect a breakout. Large participants — banks, prop desks, funds — cannot fill size at one price. They need counterparties, and clusters of resting orders provide them." },
+    { "type": "p", "text": "This is why obvious levels get run so often. Equal lows on XAUUSD are not just a chart pattern; they are a visible pile of buy stops belonging to short traders and sell stops belonging to long traders. Pushing price through that pile fills large orders efficiently. The technical term often used in ICT circles is a **stop hunt** or **raid on liquidity**, though the intent behind it is more mundane: it is execution logistics, not malice." },
+    { "type": "diagram", "id": "liquidity-sweep", "caption": "A sweep pierces equal lows, triggers resting sell stops, and is followed by displacement higher — the classic ICT reversal template." },
+    { "type": "h2", "text": "What a liquidity sweep actually looks like" },
+    { "type": "p", "text": "A sweep has three signature parts, and each part is observable on the chart — nothing here requires guessing intent:" },
+    { "type": "list", "items": [
+      "**Identification of an obvious pool.** Equal highs or lows, a multi-touch trendline, session highs/lows or prior day/week extremes that any chart reader can see.",
+      "**The probe.** A candle (often with a long wick) trades beyond the level, triggering stops and breakout entries. On gold, sweeps of Asian session lows during the London open are a textbook example.",
+      "**The response.** Price fails to find acceptance beyond the level and closes back inside the range, ideally with strong displacement in the opposite direction. Without displacement, it is just a breakout."
+    ] },
+    { "type": "h2", "text": "Sweep versus genuine breakout: the honest distinction" },
+    { "type": "p", "text": "You cannot know in advance whether a run on liquidity will reverse (a sweep) or continue (a breakout), and any claim otherwise should make you skeptical. What you can do is define a rule for **confirmation**. A common rule-based filter: require price to close back beyond the swept level within one to three candles, plus a displacement leg that breaks structure in the opposite direction. If that confirmation never arrives, the setup is discarded — the move is treated as a potential genuine breakout and left alone." },
+    { "type": "callout", "variant": "info", "title": "Rule over prediction", "text": "The sweep itself is not the trade. The trade is a defined response: sweep + close back inside + market structure shift. If the third condition is missing, there is no setup. This is the difference between a rule-based system and a prediction." },
+    { "type": "h2", "text": "Where sweeps happen most often on gold and silver" },
+    { "type": "p", "text": "Liquidity is not evenly distributed through the day. On XAUUSD and XAGUSD, the highest-probability windows tend to cluster around the **London open**, the **New York open**, and the 8:30 ET data releases, when institutional order flow is heaviest. The **Asian session** typically builds the ranges that later sessions then sweep. You can read more in our guide to [gold session behavior](/blog/gold-session-behavior-asia-london-new-york)." },
+    { "type": "h2", "text": "How to trade a sweep with rules" },
+    { "type": "list", "items": [
+      "**Mark the pools in advance.** Before the London and New York sessions, mark equal highs/lows, prior session extremes and the previous day high/low. If you cannot point at the level before the sweep happens, you are not trading a sweep — you are narrating one.",
+      "**Wait for the probe and the close.** Let price trade beyond the level and close back inside. No chasing wicks.",
+      "**Require a market structure shift.** A displacement candle that breaks the most recent opposing swing confirms the reversal. See [MSS vs BOS](/blog/market-structure-shift-vs-break-of-structure).",
+      "**Define entry, stop and invalidation before entry.** Common entries are the sweep wick area or a [fair value gap](/blog/what-is-a-fair-value-gap) created by the displacement. Invalidation is a close beyond the sweep extreme.",
+      "**Size for invalidation, not for conviction.** Position size follows the stop distance, never the excitement level of the setup."
+    ] },
+    { "type": "h2", "text": "Common mistakes with sweep trading" },
+    { "type": "p", "text": "The most expensive mistake is treating **every** pierce of a level as a sweep. Levels get broken for real all the time — news, momentum flows and position building all cause genuine continuations. The second mistake is entering the moment the level breaks, before any confirmation candle exists. The third is ignoring context: a sweep of an Asian range low into a higher-timeframe [discount zone](/blog/premium-and-discount-explained) carries a very different weight than a random pierce in the middle of a range." },
+    { "type": "h2", "text": "How TradePilot systematizes sweeps" },
+    { "type": "p", "text": "Our signal engine encodes the sequence above as explicit rules: pool detection, sweep detection, close-back-inside confirmation, displacement and MSS validation. Every [XAUUSD signal](/xauusd-signals) and [XAGUSD signal](/xagusd-signals) shows which rules fired and assigns a transparent quality score, and every rule has been [backtested](/ict-backtesting) on historical gold and silver data. The goal is not to predict sweeps — it is to respond to them consistently." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/blog/what-is-a-fair-value-gap", "text": "What is a Fair Value Gap?" },
+      { "href": "/ict-concepts", "text": "ICT & Smart Money Concepts glossary" },
+      { "href": "/blog/how-to-backtest-xauusd-strategies", "text": "How to backtest XAUUSD strategies" }
+    ] }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "slug": "what-is-an-order-block",
+  "title": "What Is an Order Block? Origins, Validation and Entry Rules",
+  "seoTitle": "What Is an Order Block? ICT Order Block Concept Explained | TradePilot",
+  "seoDescription": "An order block is the last opposing candle before a strong displacement. Learn how to identify and validate order blocks on XAUUSD and XAGUSD, and how they fit a rule-based ICT model.",
+  "excerpt": "Order blocks mark the last candle of one side before a strong move in the other. Here is how to find them, how to tell real ones from random down-candles, and where they fit in a complete setup.",
+  "category": "Price Action",
+  "tags": ["order block", "ICT", "smart money concepts", "XAGUSD", "XAUUSD"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-01-22",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 7,
+  "content": [
+    { "type": "p", "text": "An **order block** is, in its simplest definition, the last candle of the opposing direction before a strong displacement in the new direction. In a bullish sequence, it is the final bearish candle before the rally; in a bearish sequence, the final bullish candle before the selloff. ICT traders treat these zones as footprints of institutional buying or selling — areas where the market may return before continuing." },
+    { "type": "diagram", "id": "order-block", "caption": "The last bearish candle before the impulsive rally defines the bullish order block; price later retraces into it before continuing higher." },
+    { "type": "h2", "text": "Why the last opposing candle gets the attention" },
+    { "type": "p", "text": "The logic is execution-based. To buy a large size, an institution needs sellers — and the most convenient sellers are the ones resting orders during the final push down, at the point where the market is about to reverse. The last opposing candle therefore approximates the price range where a large buy program may have been filled. When price revisits that range later, the question is whether unfilled interest remains there." },
+    { "type": "p", "text": "As with most ICT concepts, the explanation is plausible but ultimately unverifiable from the outside. What makes order blocks useful is not the narrative but the **observable behavior**: certain zones consistently produce reactions, and the conditions under which they do can be written as rules and tested. That is the approach TradePilot takes throughout." },
+    { "type": "h2", "text": "Identifying an order block correctly" },
+    { "type": "list", "items": [
+      "**Find the displacement.** A strong impulsive candle sequence that breaks structure — not just two green candles after a red one. Without displacement, there is no order flow worth labeling.",
+      "**Locate the origin.** The last down-close candle before the displacement (bullish case) defines the block's zone, from its high to its low (some traders refine to open or 50%).",
+      "**Check what preceded it.** Blocks that form after a [liquidity sweep](/blog/what-is-a-liquidity-sweep) or that leave a [fair value gap](/blog/what-is-a-fair-value-gap) behind carry significantly more validity than blocks appearing mid-range.",
+      "**Mark it before price returns.** A zone drawn after the retrace has already happened is a diary entry, not a trade plan."
+    ] },
+    { "type": "h2", "text": "Validation: what makes an order block \"respected\"" },
+    { "type": "p", "text": "When price returns to the zone, a valid order block typically produces a visible reaction: rejection wicks, an absorption of selling, or a fresh displacement leg away from the zone. A block that price trades through without response is simply invalidated — the orders presumed to be there were not, or were already consumed. There is no subjective judgment to make; the market's behavior at the zone either supports the idea or it does not." },
+    { "type": "callout", "variant": "info", "title": "Blocks get consumed", "text": "Each touch uses up resting interest. An order block that has already been respected once is a weaker candidate the second time — and effectively dead after price has closed through it." },
+    { "type": "h2", "text": "Where order blocks fit in the entry sequence" },
+    { "type": "p", "text": "Order blocks and fair value gaps solve the same problem — where to enter after confirmation — from slightly different angles. In practice, the highest-quality zones are **confluences**: an order block that overlaps a fair value gap, sitting inside a higher-timeframe [discount zone](/blog/premium-and-discount-explained), reached after an MSS confirmed a reversal. That stack of conditions is exactly what the TradePilot engine requires before generating a setup, because each layer independently filters out noise." },
+    { "type": "h2", "text": "From chart concept to testable rule" },
+    { "type": "p", "text": "A rule-based definition might read: *bullish order block setup = sweep of a marked pool, displacement with MSS above the prior lower high, retrace into the origin order block, entry on reaction with stop below the block low*. Every clause is binary. You can mark a thousand historical examples on gold and silver and measure how the rules perform — which is precisely what our [ICT backtesting guide](/blog/how-to-backtest-xauusd-strategies) walks through, and what the [signal pages](/xauusd-signals) show in production." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/blog/market-structure-shift-vs-break-of-structure", "text": "MSS vs BOS: reading market structure" },
+      { "href": "/ict-concepts", "text": "ICT concepts glossary" },
+      { "href": "/xagusd-signals", "text": "How XAGUSD signals apply these rules" }
+    ] }
+  ]
+}

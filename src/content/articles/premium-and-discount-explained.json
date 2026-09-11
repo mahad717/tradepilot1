@@ -1,0 +1,35 @@
+{
+  "slug": "premium-and-discount-explained",
+  "title": "Premium and Discount: Why Entry Location Decides Everything",
+  "seoTitle": "Premium and Discount Zones: ICT Dealing Ranges Explained | TradePilot",
+  "seoDescription": "Premium and discount split a dealing range at its 50% equilibrium. Learn how to buy in discount and sell in premium on XAUUSD and XAGUSD with objective rules.",
+  "excerpt": "Split any meaningful range in half and you get the single most useful location filter in ICT trading: buy below equilibrium, sell above it. Here is how to apply it consistently.",
+  "category": "ICT Basics",
+  "tags": ["premium", "discount", "equilibrium", "dealing range", "ICT"],
+  "author": "TradePilot Research",
+  "publishedAt": "2026-02-05",
+  "updatedAt": "2026-08-14",
+  "readingMinutes": 6,
+  "content": [
+    { "type": "p", "text": "Take any meaningful price range — a swing leg, a session range, a daily range — and cut it in half. The upper half is **premium**, the lower half is **discount**, and the midpoint is **equilibrium**. That is the entire concept, and it is one of the most powerful filters in ICT trading because it answers a question every entry needs answered: *is this a good location to be doing what I am about to do?*" },
+    { "type": "diagram", "id": "premium-discount", "caption": "The dealing range in half: long setups are sought in discount, short setups in premium, with the 50% level acting as equilibrium." },
+    { "type": "h2", "text": "The logic: buy cheap, sell expensive — systematically" },
+    { "type": "p", "text": "The intuition is old — \"buy low, sell high\" — but the dealing range makes it mechanical. If your model is bullish on gold, entering long in the premium half of the range means paying an expensive price where late buyers cluster and where the market often retraces from. Entering long in discount means entering where the higher-timeframe buyers were offered value. The same logic inverts for shorts. The filter does not create signals; it **vetoes** bad-location entries that your directional model would otherwise take." },
+    { "type": "h2", "text": "Choosing the dealing range" },
+    { "type": "p", "text": "The concept is only as good as the range you measure. Rules that keep it objective:" },
+    { "type": "list", "items": [
+      "**Anchor to a structural leg.** The move from the last significant higher low to the current higher high (or its bearish mirror) on your trading timeframe's higher anchor — typically the daily or 4-hour range for intraday trading.",
+      "**Redraw when the range changes.** When a new swing completes, the old range is retired. Trading yesterday's range after the market has rebuilt structure is stale analysis.",
+      "**Align ranges across timeframes.** An intraday discount that sits inside a daily premium is a context conflict — the higher timeframe wins for bias, the lower timeframe decides timing."
+    ] },
+    { "type": "callout", "variant": "info", "title": "Optimal Trade Entry", "text": "ICT refines the discount zone further with the Optimal Trade Entry (OTE) window — roughly the 62%–79% retracement of the range. It is a confluence tool, not a magic number, and works best combined with a sweep and an MSS." },
+    { "type": "h2", "text": "Premium/discount in the full model" },
+    { "type": "p", "text": "Location is the third leg of the TradePilot setup stack: a [liquidity sweep](/blog/what-is-a-liquidity-sweep) supplies the catalyst, the [market structure shift](/blog/market-structure-shift-vs-break-of-structure) supplies confirmation, and premium/discount positioning supplies the **location veto**. A beautiful sweep-and-shift pattern in the premium half of the daily range gets rejected by the engine for longs — the risk-reward and the institutional logic are both wrong, no matter how clean the pattern looks." },
+    { "type": "p", "text": "This is also why two visually identical setups can have different quality scores in our [XAUUSD signals](/xauusd-signals): one fired in discount with the daily range, the other in premium. Same pattern, different location, different expectancy. You can see how these layers combine in the [ICT strategy guide](/ict-strategy) or test the logic yourself with [backtesting](/ict-backtesting)." },
+    { "type": "links", "title": "Continue learning", "items": [
+      { "href": "/blog/smt-divergence-between-gold-and-silver", "text": "SMT divergence between gold and silver" },
+      { "href": "/ict-concepts", "text": "ICT concepts glossary" },
+      { "href": "/gold-analysis", "text": "Gold price analysis framework" }
+    ] }
+  ]
+}
