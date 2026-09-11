@@ -319,6 +319,38 @@ export function runAllTests(): TestResult[] {
     add("Initial stop never equals entry", pass, bad.length === 0 ? `0/${run.trades.length} trades with stop==entry` : `${bad.length} violations`);
   }
 
+  // ---- 12. pending-order telemetry (closest approach + late fills) --------------------------
+  {
+    // entry 100, risk 2. Price never dips below 100.5 during the 10-bar window →
+    // order expires; closest approach = 0.5/2 = 0.25R. Then it touches on bar 16
+    // (decision bar 5 → offset 11, after expiry) → lateFillBarOffset = 11, closest = 0.
+    const rows: [number, number, number, number][] = [
+      ...Array.from({ length: 6 }, (_, k) => [100 + k * 0.1, 100.9, 99.9 + k * 0.1, 100.4 + k * 0.1] as [number, number, number, number]),
+      ...Array.from({ length: 10 }, (_, k) => [100.6, 101.4, 100.5, 101.0 + (k % 2) * 0.2] as [number, number, number, number]),
+      [101.0, 101.6, 99.8, 100.0], // bar 16 → touches 100 (late), closes back above
+      [100.0, 100.8, 99.7, 100.3],
+    ];
+    const candles = mkCandles(rows);
+    const res = simulateTrade(candles, mkSetup({ decidedIndex: 5, decidedTime: candles[5].time }), execConfig({ orderExpiryBars: 10 }), "XAUUSD", "15min");
+    const p = res.pending;
+    const pass =
+      res.filled === false &&
+      p.outcome === "expired" &&
+      p.fillBarOffset === null &&
+      p.lateFillBarOffset === 16 - 5 && // decision bar 5 → touch on bar 16 → offset 11
+      p.closestApproachR !== null &&
+      Math.abs(p.closestApproachR - 0) < 1e-9; // eventually touched → 0
+    // control: an order that is never approached keeps a positive distance
+    const rowsFar: [number, number, number, number][] = rows.slice(0, 16).map((r) => [r[0] + 2, r[1] + 2, r[2] + 2, r[3] + 2]);
+    const resFar = simulateTrade(mkCandles(rowsFar), mkSetup({ decidedIndex: 5, decidedTime: mkCandles(rowsFar)[5].time }), execConfig({ orderExpiryBars: 10 }), "XAUUSD", "15min");
+    const passFar = resFar.pending.outcome === "expired" && resFar.pending.lateFillBarOffset === null && (resFar.pending.closestApproachR ?? -1) > 1;
+    add(
+      "Pending-order telemetry",
+      pass && passFar,
+      `expired order: lateFill=${p.lateFillBarOffset} closest=${p.closestApproachR}R (expect touch after expiry → 0R); untouched control: closest=${resFar.pending.closestApproachR}R (expect >1R, no late fill)`
+    );
+  }
+
   return results;
 }
 

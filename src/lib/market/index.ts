@@ -1,5 +1,5 @@
 import "server-only";
-import { fetchCandlesLive, fetchQuoteLive } from "./twelvedata";
+import { fetchCandlesLive, fetchCandlesRangeLive, fetchQuoteLive } from "./twelvedata";
 import { generateSimulatedCandles } from "./simulated";
 import type { Candle, DataSource, IntervalKey, Quote, SymbolKey } from "./types";
 
@@ -66,6 +66,27 @@ export interface CandleResult {
   interval: IntervalKey;
 }
 
+/**
+ * Spot metals feeds publish quotes ~24/7, including dead Saturday hours.
+ * ICT session logic must not fire on weekend candles (phantom Asia-KZ
+ * sweeps in a closed market), so backtests drop:
+ *   - all of Saturday (spot FX/metals closed)
+ *   - Sunday before 22:00 UTC (market reopens Sun 22:00 UTC)
+ */
+export function isWeekendCandle(timeSec: number): boolean {
+  const d = new Date(timeSec * 1000);
+  const day = d.getUTCDay();
+  if (day === 6) return true; // Saturday
+  if (day === 0 && d.getUTCHours() < 22) return true; // Sunday before reopen
+  return false;
+}
+
+export function dropWeekendCandles(candles: Candle[]): { candles: Candle[]; dropped: number } {
+  const kept = candles.filter((c) => !isWeekendCandle(c.time));
+  return { candles: kept, dropped: candles.length - kept.length };
+}
+
+/** Fetch candles with cache. `stale` is set when the response came from an aged cache entry. */
 export async function getCandles(
   symbol: SymbolKey,
   interval: IntervalKey,
@@ -80,6 +101,28 @@ export async function getCandles(
   }
   const candles = generateSimulatedCandles(cfg.tdSymbol, interval, size);
   return { candles, source: "SIMULATED", stale: false, symbol, interval };
+}
+
+/**
+ * Deep-history fetch for sample-size starved backtests: TwelveData caps a
+ * single request at 5000 candles, so longer windows are assembled from
+ * oldest-edge-paginated chunks (each chunk consumes one API credit).
+ * Simulated feeds just generate the requested span.
+ */
+export async function getCandlesDeep(
+  symbol: SymbolKey,
+  interval: IntervalKey,
+  totalBars: number
+): Promise<CandleResult & { requests: number }> {
+  const cfg = SYMBOLS[symbol];
+  const size = Math.min(Math.max(totalBars, 50), 25000);
+
+  if (cfg.liveAvailable) {
+    const { candles, stale, requests } = await fetchCandlesRangeLive(cfg.tdSymbol, interval, size);
+    return { candles, source: "LIVE", stale, symbol, interval, requests };
+  }
+  const candles = generateSimulatedCandles(cfg.tdSymbol, interval, size);
+  return { candles, source: "SIMULATED", stale: false, symbol, interval, requests: 0 };
 }
 
 export async function getQuotes(): Promise<Record<string, Quote>> {

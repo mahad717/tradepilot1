@@ -7,8 +7,9 @@ import type {
   TradeRecord,
 } from "./types";
 import { REJECTION_LABELS, MODEL_LABELS } from "./types";
-import type { ModelKey, RejectionCode, RrDiagnostics, SessionDiagnostics } from "./types";
+import type { ModelKey, RejectionCode, RrDiagnostics, SessionDiagnostics, OrderFlowSummary } from "./types";
 import type { DiagSink } from "./sequence";
+import { STAGE_DEPTH } from "./sequence";
 import { SESSION_LABELS } from "./sessions";
 import type { PeriodStats } from "./walkforward";
 
@@ -209,6 +210,12 @@ export interface ModelPerformanceRow {
   netR: number;
 }
 
+/**
+ * Per-model rejections count ONLY the model-conditional stage (zone selection
+ * and deeper, STAGE_DEPTH ≥ 6). The shared prefix (bias → sweep → MSS →
+ * displacement) is identical across models by construction — listing it per
+ * model produced three identical columns and zero information.
+ */
 export function modelPerformance(diag: DiagSink, trades: TradeRecord[]): ModelPerformanceRow[] {
   const rows: ModelPerformanceRow[] = [];
   for (const [model, stat] of diag.byModel.entries()) {
@@ -219,6 +226,7 @@ export function modelPerformance(diag: DiagSink, trades: TradeRecord[]): ModelPe
       label: MODEL_LABELS[model] ?? model,
       opportunities: stat.opportunities,
       topRejections: [...stat.rejections.entries()]
+        .filter(([code]) => (STAGE_DEPTH[code] ?? 0) >= 6)
         .map(([code, count]) => ({ code, label: REJECTION_LABELS[code] ?? code, count }))
         .sort((a, b) => b.count - a.count)
         .slice(0, 3),
@@ -232,6 +240,56 @@ export function modelPerformance(diag: DiagSink, trades: TradeRecord[]): ModelPe
     });
   }
   return rows.sort((a, b) => b.opportunities - a.opportunities);
+}
+
+// ---------------------------------------------------------------------------
+// Pending-order telemetry (spec §9 extension): why did orders not fill?
+// ---------------------------------------------------------------------------
+
+export interface PendingTelemetryInput {
+  outcome: "filled" | "expired" | "invalidated";
+  fillBarOffset: number | null;
+  lateFillBarOffset: number | null;
+  closestApproachR: number | null;
+}
+
+export function summarizeOrderFlow(items: PendingTelemetryInput[], expiryBars: number): OrderFlowSummary {
+  const placed = items.length;
+  const filled = items.filter((p) => p.outcome === "filled").length;
+  const invalidated = items.filter((p) => p.outcome === "invalidated").length;
+  const expired = items.filter((p) => p.outcome === "expired").length;
+  const latencies = items
+    .map((p) => p.fillBarOffset)
+    .filter((v): v is number => v !== null);
+  const lateFills = items.filter((p) => p.lateFillBarOffset !== null).length;
+  const approaches = items
+    .filter((p) => p.outcome === "expired")
+    .map((p) => p.closestApproachR)
+    .filter((v): v is number => v !== null)
+    .sort((a, b) => a - b);
+  const bucket = (max: number) => latencies.filter((v) => v <= max).length;
+  const rateAt = (bars: number) => {
+    const touches = items.filter((p) => p.fillBarOffset !== null && p.fillBarOffset <= bars).length;
+    return placed > 0 ? Math.round((touches / placed) * 1000) / 10 : null;
+  };
+  const median = approaches.length ? Math.round(approaches[Math.floor(approaches.length / 2)] * 100) / 100 : null;
+  const notes: string[] = [];
+  if (placed === 0) notes.push("No orders were placed in this run.");
+  if (expired > 0 && median !== null && median > 0.75) notes.push(`Expired orders never came closer than ~${median}R to entry — the retracement depth, not the expiry window, is the constraint.`);
+  else if (expired > 0 && median !== null) notes.push(`Expired orders came within ~${median}R of entry — a longer expiry window (or a nearer entry limit) would have caught several.`);
+  if (lateFills > 0) notes.push(`${lateFills} order${lateFills === 1 ? "" : "s"} were eventually touched AFTER the ${expiryBars}-bar expiry window.`);
+  if (placed > 0 && rateAt(48) !== null) notes.push(`Cumulative fill rate: ${rateAt(6)}% within 6 bars, ${rateAt(12)}% within 12, ${rateAt(24)}% within 24, ${rateAt(48)}% within 48.`);
+  return {
+    placed,
+    filled,
+    expired,
+    invalidated,
+    lateFills,
+    fillLatency: { le3: bucket(3), le6: bucket(6), le12: bucket(12), le24: bucket(24), le48: bucket(48) },
+    fillRateAt: { bars6: rateAt(6), bars12: rateAt(12), bars24: rateAt(24), bars48: rateAt(48) },
+    medianClosestApproachR: median,
+    note: notes.join(" "),
+  };
 }
 
 /** RR-filter histogram counted BEFORE the gate applies (spec §9). */

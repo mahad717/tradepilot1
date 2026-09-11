@@ -16,22 +16,38 @@ function num(v: number | null | undefined, suffix = ""): string {
   return `${v}${suffix}`;
 }
 
-function EquityCurve({ points }: { points: { time: number; r: number }[] }) {
-  if (points.length < 2) return null;
+function EquityCurve({ points, from, to }: { points: { time: number; r: number }[]; from: number; to: number }) {
+  if (points.length < 1 || !(to > from)) return null;
   const w = 640;
-  const h = 160;
-  const rs = points.map((p) => p.r);
+  const h = 170;
+  const padL = 6;
+  const padR = 44;
+  // time-scaled x-axis: a 3-trade month must NOT look like a uniform ladder
+  const start = [{ time: from, r: 0 }, ...points];
+  const rs = start.map((p) => p.r);
   const min = Math.min(0, ...rs);
   const max = Math.max(0.5, ...rs);
-  const x = (i: number) => (i / (points.length - 1)) * w;
-  const y = (r: number) => h - ((r - min) / (max - min)) * h;
-  const path = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.r).toFixed(1)}`).join(" ");
+  const x = (t: number) => padL + ((t - from) / (to - from)) * (w - padL - padR);
+  const y = (r: number) => h - 12 - ((r - min) / (max - min)) * (h - 24);
+  // step-after path: equity only changes at trade exits
+  let path = `M${x(start[0].time).toFixed(1)},${y(start[0].r).toFixed(1)}`;
+  for (let i = 1; i < start.length; i++) {
+    path += ` H${x(start[i].time).toFixed(1)} V${y(start[i].r).toFixed(1)}`;
+  }
   const zeroY = y(0);
   const positive = rs[rs.length - 1] >= 0;
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" role="img" aria-label="Equity curve in R multiples">
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" role="img" aria-label="Equity curve in R multiples over time">
       <line x1="0" y1={zeroY} x2={w} y2={zeroY} stroke="rgba(255,255,255,0.15)" strokeDasharray="4 4" />
       <path d={path} fill="none" stroke={positive ? "#2fbf71" : "#e5484d"} strokeWidth="2" />
+      {points.map((p, i) => {
+        const prev = i === 0 ? 0 : points[i - 1].r;
+        const up = p.r >= prev;
+        return <circle key={i} cx={x(p.time)} cy={y(p.r)} r={3.5} fill={up ? "#2fbf71" : "#e5484d"} stroke="rgba(0,0,0,0.4)" strokeWidth={1}><title>{`trade ${i + 1}: ${p.r >= 0 ? "+" : ""}${p.r}R cumulative @ ${new Date(p.time * 1000).toISOString().slice(0, 10)}`}</title></circle>;
+      })}
+      <text x={w - padR + 6} y={y(rs[rs.length - 1]) + 4} fontSize="11" fontWeight="bold" fill={positive ? "#2fbf71" : "#e5484d"}>
+        {rs[rs.length - 1] >= 0 ? "+" : ""}{rs[rs.length - 1]}R
+      </text>
     </svg>
   );
 }
@@ -73,23 +89,6 @@ function Bar({ value, max }: { value: number; max: number }) {
   return (
     <div className="h-1.5 w-full rounded bg-muted">
       <div className="h-1.5 rounded bg-gold" style={{ width: `${pct}%` }} />
-    </div>
-  );
-}
-
-function SampleBanner({ result }: { result: BacktestResult }) {
-  const { category, label, note } = result.sampleInfo;
-  const cls =
-    category === "MODERATE" || category === "STRONGER"
-      ? "border-emerald-900/50 bg-emerald-950/30 text-emerald-300"
-      : category === "LOW"
-        ? "border-amber-900/50 bg-amber-950/30 text-amber-300"
-        : "border-red-900/50 bg-red-950/30 text-red-300";
-  return (
-    <div className={`rounded-lg border px-4 py-3 text-sm ${cls}`} role="status">
-      <span className="font-bold">Sample size: {label}</span>
-      <span className="ml-2 text-xs">{result.metrics.trades} trades</span>
-      <p className="mt-1 text-xs opacity-90">{note}</p>
     </div>
   );
 }
@@ -338,10 +337,11 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         <div>
           <label htmlFor="bt-bars" className="mb-1 block text-xs text-muted-foreground">History (bars)</label>
           <select id="bt-bars" value={bars} onChange={(e) => setBars(Number(e.target.value))} className={selectCls}>
-            {[400, 1000, 1500, 3000, 5000].map((b) => (
-              <option key={b} value={b}>{b}</option>
+            {[400, 1000, 1500, 3000, 5000, 10000, 15000, 25000].map((b) => (
+              <option key={b} value={b}>{b}{b > 5000 ? " (deep)" : ""}</option>
             ))}
           </select>
+          {bars > 5000 && <p className="mt-1 text-[10px] text-muted-foreground">Deep windows are assembled from paginated API chunks (extra credits, slower first run, then cached 15 min).</p>}
         </div>
         <div>
           <label htmlFor="bt-strict" className="mb-1 block text-xs text-muted-foreground">Strictness</label>
@@ -409,15 +409,17 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
 
       {m && result && flags && (
         <div className="space-y-6">
-          {/* ---------------- robustness flags ---------------- */}
+          {/* ---------------- robustness + sample verdict (one honest verdict, not two banners) ---------------- */}
           <div className={`rounded-lg border px-4 py-3 text-sm ${flagCls}`} role="status">
-            <span className="font-bold">Robustness: {flags.level}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-bold">Robustness: {flags.level}</span>
+              <span className="rounded bg-background/40 px-2 py-0.5 text-xs font-semibold">Sample size: {result.sampleInfo.label} · {m.trades} trades</span>
+            </div>
+            <p className="mt-1 text-xs opacity-90">{result.sampleInfo.note}</p>
             <ul className="mt-1 space-y-0.5 text-xs opacity-90">
               {flags.reasons.map((r, i) => <li key={i}>• {r}</li>)}
             </ul>
           </div>
-
-          <SampleBanner result={result} />
 
           {/* ---------------- executive summary ---------------- */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
@@ -453,6 +455,13 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             </div>
           </div>
 
+          {/* ---------------- cost share warning ---------------- */}
+          {m.grossR > 0 && m.costsR / m.grossR > 0.3 && (
+            <p className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-4 py-2 text-xs text-amber-300">
+              Transaction costs consume {Math.round((m.costsR / m.grossR) * 100)}% of gross edge ({m.costsR}R of {m.grossR}R) — a fixed round-trip cost (~$0.42 on XAUUSD) dominates when structural stops are tight. Check the per-trade cost column below.
+            </p>
+          )}
+
           <div className="rounded-xl border border-border bg-card p-4">
             <div className="mb-2 flex items-center justify-between">
               <h3 className="text-sm font-semibold">Equity curve (net R)</h3>
@@ -460,7 +469,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
                 {fmtDate(result.from)} → {fmtDate(result.to)} · {result.bars} bars · {result.source} · {result.strictness} preset
               </span>
             </div>
-            <EquityCurve points={result.equityCurve} />
+            <EquityCurve points={result.equityCurve} from={result.from} to={result.to} />
           </div>
 
           {/* ---------------- STRATEGY DIAGNOSTICS: signal funnel (spec §1) ---------------- */}
@@ -469,17 +478,21 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             subtitle="How many opportunities survive each stage (count + % of total candles). bars = per-candle facts · candidates = bar × model opportunities. Shows exactly where the strategy is too loose or too strict."
           >
             <div className="space-y-2">
-              {result.funnel.map((f) => (
-                <div key={f.stage}>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">
-                      {f.stage} <span className="ml-1 rounded bg-muted/60 px-1 text-[10px] uppercase">{f.unit}</span>
-                    </span>
-                    <span className="font-mono">{f.count} <span className="text-muted-foreground">{f.pct}%</span></span>
+              {result.funnel.map((f) => {
+                const smtBlocked = f.stage === "SMT confirmation" && result.silverSource !== "LIVE";
+                return (
+                  <div key={f.stage} className={smtBlocked ? "opacity-50" : undefined}>
+                    <div className="flex justify-between text-xs">
+                      <span className="text-muted-foreground">
+                        {f.stage} <span className="ml-1 rounded bg-muted/60 px-1 text-[10px] uppercase">{f.unit}</span>
+                        {smtBlocked && <span className="ml-2 text-[10px] italic">N/A — silver feed {result.silverSource}; Model E cannot run</span>}
+                      </span>
+                      <span className="font-mono">{f.count} <span className="text-muted-foreground">{f.pct}%</span></span>
+                    </div>
+                    <Bar value={f.count} max={maxFunnel} />
                   </div>
-                  <Bar value={f.count} max={maxFunnel} />
-                </div>
-              ))}
+                );
+              })}
             </div>
           </Section>
 
@@ -511,7 +524,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           {/* ---------------- setup model performance (spec §7) ---------------- */}
           <Section
             title="Setup model performance"
-            subtitle="Which ICT model actually produces trades — and whether it has an edge. Top rejections show where each model loses its opportunities."
+            subtitle="Which ICT model actually produces trades — and whether it has an edge. Zone-stage rejections only: the shared prefix (bias → sweep → MSS → displacement) is identical across models by construction, so it is listed once in the rejection table above."
           >
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
@@ -525,7 +538,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
                     <th className="px-2 py-1.5 text-right font-medium">Expectancy</th>
                     <th className="px-2 py-1.5 text-right font-medium">PF</th>
                     <th className="px-2 py-1.5 text-right font-medium">Net R</th>
-                    <th className="px-2 py-1.5 font-medium">Top rejections</th>
+                    <th className="px-2 py-1.5 font-medium">Zone-stage rejections</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/60">
@@ -613,6 +626,26 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               </div>
             </Section>
           )}
+
+          {/* ---------------- pending-order flow: why orders don't fill ---------------- */}
+          <Section
+            title="Pending-order flow — why orders don't fill"
+            subtitle={result.orderFlow.note || "Telemetry between order placement and fill/expiry. The observation window (48 bars) never changes trading semantics — it only measures what would have happened."}
+          >
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+              <div className={metricCard}><p className="text-[10px] text-muted-foreground">Orders placed</p><p className="font-bold">{result.orderFlow.placed}</p></div>
+              <div className={metricCard}><p className="text-[10px] text-muted-foreground">Filled</p><p className="font-bold text-emerald-400">{result.orderFlow.filled}</p></div>
+              <div className={metricCard}><p className="text-[10px] text-muted-foreground">Expired (window)</p><p className="font-bold text-amber-400">{result.orderFlow.expired}</p></div>
+              <div className={metricCard}><p className="text-[10px] text-muted-foreground">Zone-invalidated</p><p className="font-bold text-red-400">{result.orderFlow.invalidated}</p></div>
+              <div className={metricCard} title="Entry was touched AFTER the configured expiry window — evidence the expiry, not the level, was the constraint"><p className="text-[10px] text-muted-foreground">Touched after expiry</p><p className="font-bold">{result.orderFlow.lateFills}</p></div>
+              <div className={metricCard} title="Median closest approach of expired orders to the entry limit, in R"><p className="text-[10px] text-muted-foreground">Median closest approach</p><p className="font-bold">{result.orderFlow.medianClosestApproachR === null ? "—" : `${result.orderFlow.medianClosestApproachR}R`}</p></div>
+            </div>
+            <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+              <p>Fill latency (filled orders): ≤3 bars {result.orderFlow.fillLatency.le3} · ≤6 {result.orderFlow.fillLatency.le6} · ≤12 {result.orderFlow.fillLatency.le12} · ≤24 {result.orderFlow.fillLatency.le24} · ≤48 {result.orderFlow.fillLatency.le48}</p>
+              <p>Cumulative fill rate: {result.orderFlow.fillRateAt.bars6 ?? 0}% within 6 bars · {result.orderFlow.fillRateAt.bars12 ?? 0}% within 12 · {result.orderFlow.fillRateAt.bars24 ?? 0}% within 24 · {result.orderFlow.fillRateAt.bars48 ?? 0}% within 48</p>
+              <p className="text-[11px]">Same-candle SL+TP collisions: <span className="font-mono text-foreground/80">{result.ambiguityCollisions}</span>{result.ambiguityCollisions === 0 ? " — the ambiguity model had no effect on this run (the setting is a no-op until a collision occurs)." : ""}</p>
+            </div>
+          </Section>
 
           {/* ---------------- rejected setup inspector (spec §19) ---------------- */}
           <Section
@@ -814,10 +847,11 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </div>
 
           {/* ---------------- data quality ---------------- */}
-          <Section title="Data quality audit" subtitle="Historical feed sanity check (spec §18) — duplicate/out-of-order candles, gaps, invalid OHLC.">
+          <Section title="Data quality audit" subtitle="Historical feed sanity check (spec §18) — duplicate/out-of-order candles, gaps, invalid OHLC, plus dead-market weekend candle removal.">
             <p className={`text-xs ${result.dataQuality.ok ? "text-emerald-400" : "text-amber-400"}`}>{result.dataQuality.note}</p>
-            <div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-6">
-              <div className={metricCard}><p className="text-[10px] text-muted-foreground">Bars</p><p className="font-bold">{result.dataQuality.bars}</p></div>
+            <div className="mt-2 grid grid-cols-2 gap-3 text-xs sm:grid-cols-3 lg:grid-cols-7">
+              <div className={metricCard}><p className="text-[10px] text-muted-foreground">Bars traded</p><p className="font-bold">{result.dataQuality.bars}</p></div>
+              <div className={metricCard} title="Weekend candles removed before the run (Sat + Sun before 22:00 UTC) — the raw feed quotes through closed hours"><p className="text-[10px] text-muted-foreground">Weekend dropped</p><p className="font-bold">{result.dataQuality.weekendCandles}</p></div>
               <div className={metricCard}><p className="text-[10px] text-muted-foreground">Duplicates</p><p className="font-bold">{result.dataQuality.duplicates}</p></div>
               <div className={metricCard}><p className="text-[10px] text-muted-foreground">Out of order</p><p className="font-bold">{result.dataQuality.outOfOrder}</p></div>
               <div className={metricCard}><p className="text-[10px] text-muted-foreground">Gaps</p><p className="font-bold">{result.dataQuality.gaps}</p></div>
@@ -848,6 +882,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
                       <th className="px-2 py-1.5 text-right font-medium">Current</th>
                       <th className="px-2 py-1.5 text-right font-medium">Outcome</th>
                       <th className="px-2 py-1.5 text-right font-medium">Gross R</th>
+                      <th className="px-2 py-1.5 text-right font-medium" title="Spread + slippage + commission attributed to this trade (gross − net)">Cost R</th>
                       <th className="px-2 py-1.5 text-right font-medium">Net R</th>
                       <th className="px-2 py-1.5 text-right font-medium">MFE</th>
                       <th className="px-2 py-1.5 text-right font-medium">MAE</th>
@@ -865,6 +900,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
                         <td className="px-2 py-1.5 text-right font-mono">{t.currentStop}</td>
                         <td className="px-2 py-1.5 text-right">{t.outcome}</td>
                         <td className="px-2 py-1.5 text-right">{t.grossR}R</td>
+                        <td className="px-2 py-1.5 text-right text-amber-400/90">{t.costR}R</td>
                         <td className={`px-2 py-1.5 text-right font-semibold ${t.netR >= 0 ? "text-emerald-400" : "text-red-400"}`}>{t.netR}R</td>
                         <td className="px-2 py-1.5 text-right">{t.mfeR}R</td>
                         <td className="px-2 py-1.5 text-right">{t.maeR}R</td>

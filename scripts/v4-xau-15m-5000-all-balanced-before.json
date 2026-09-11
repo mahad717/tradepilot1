@@ -1,0 +1,299 @@
+{
+ "name": "xau-15m-5000-all-balanced-before",
+ "qs": "symbol=XAUUSD&interval=15min&bars=5000&strictness=balanced",
+ "bars": 5000,
+ "from": 1784676600,
+ "to": 1789175700,
+ "source": "LIVE",
+ "silverSource": "unavailable",
+ "metrics": {
+  "trades": 19,
+  "wins": 12,
+  "losses": 7,
+  "winRate": 63.2,
+  "grossR": 2.5,
+  "costsR": 1.73,
+  "netR": 0.77,
+  "expectancyR": 0.04,
+  "expectancyGrossR": 0.13,
+  "avgWinR": 0.37,
+  "avgLossR": -0.52,
+  "profitFactor": 1.21,
+  "maxDrawdownR": 3.15,
+  "bestStreak": 5,
+  "worstStreak": 2,
+  "avgMfeWinners": 1.63,
+  "avgMfeLosers": 0.28,
+  "avgMaeWinners": -0.52,
+  "avgMaeLosers": -1.33
+ },
+ "dataQuality": {
+  "bars": 5000,
+  "duplicates": 0,
+  "outOfOrder": 0,
+  "gaps": 0,
+  "invalidOhlc": 0,
+  "largestGapBars": 0,
+  "ok": true,
+  "note": "History is clean: chronological, gap-free (≤ weekend), valid OHLC."
+ },
+ "funnel": [
+  {
+   "count": 5000
+  },
+  {
+   "count": 3763
+  },
+  {
+   "count": 2617
+  },
+  {
+   "count": 4232
+  },
+  {
+   "count": 4232
+  },
+  {
+   "count": 1468
+  },
+  {
+   "count": 1591
+  },
+  {
+   "count": 2491
+  },
+  {
+   "count": 10468
+  },
+  {
+   "count": 2547
+  },
+  {
+   "count": 964
+  },
+  {
+   "count": 411
+  },
+  {
+   "count": 26
+  },
+  {
+   "count": 332
+  },
+  {
+   "count": 224
+  },
+  {
+   "count": 224
+  },
+  {
+   "count": 0
+  },
+  {
+   "count": 210
+  },
+  {
+   "count": 62
+  },
+  {
+   "count": 19
+  },
+  {
+   "count": 43
+  }
+ ],
+ "modelStats": [
+  {
+   "model": "A_SWEEP_REVERSAL",
+   "label": "A · Sweep Reversal (FVG)",
+   "opportunities": 2617,
+   "topRejections": [
+    {
+     "code": "NO_LIQUIDITY_SWEEP",
+     "label": "No liquidity sweep",
+     "count": 1693
+    },
+    {
+     "code": "NO_MSS",
+     "label": "No MSS/CHOCH",
+     "count": 744
+    },
+    {
+     "code": "WEAK_SWEEP",
+     "label": "Weak sweep (no rejection / shallow)",
+     "count": 75
+    }
+   ],
+   "validSetups": 47,
+   "trades": 3,
+   "winRate": 66.7,
+   "expectancyR": 0.01,
+   "profitFactor": 1.6,
+   "maxDrawdownR": 0.05,
+   "netR": 0.03
+  },
+  {
+   "model": "B_FVG_CONTINUATION",
+   "label": "B · FVG Continuation (BOS)",
+   "opportunities": 2617,
+   "topRejections": [
+    {
+     "code": "WEAK_MSS",
+     "label": "MSS too old (outside window)",
+     "count": 1871
+    },
+    {
+     "code": "NO_FVG",
+     "label": "No FVG in sequence",
+     "count": 414
+    },
+    {
+     "code": "INVALID_STOP",
+     "label": "Invalid structural stop (too tight/wide)",
+     "count": 108
+    }
+   ],
+   "validSetups": 160,
+   "trades": 16,
+   "winRate": 62.5,
+   "expectancyR": 0.05,
+   "profitFactor": 1.21,
+   "maxDrawdownR": 3.15,
+   "netR": 0.74
+  },
+  {
+   "model": "C_OB_REVERSAL",
+   "label": "C · OB Reversal",
+   "opportunities": 2617,
+   "topRejections": [
+    {
+     "code": "NO_LIQUIDITY_SWEEP",
+     "label": "No liquidity sweep",
+     "count": 1693
+    },
+    {
+     "code": "NO_MSS",
+     "label": "No MSS/CHOCH",
+     "count": 744
+    },
+    {
+     "code": "WEAK_SWEEP",
+     "label": "Weak sweep (no rejection / shallow)",
+     "count": 75
+    }
+   ],
+   "validSetups": 3,
+   "trades": 0,
+   "winRate": null,
+   "expectancyR": null,
+   "profitFactor": null,
+   "maxDrawdownR": 0,
+   "netR": 0
+  },
+  {
+   "model": "D_FVG_OB_CONFLUENCE",
+   "label": "D · FVG + OB Confluence",
+   "opportunities": 2617,
+   "topRejections": [
+    {
+     "code": "NO_LIQUIDITY_SWEEP",
+     "label": "No liquidity sweep",
+     "count": 1693
+    },
+    {
+     "code": "NO_MSS",
+     "label": "No MSS/CHOCH",
+     "count": 744
+    },
+    {
+     "code": "WEAK_SWEEP",
+     "label": "Weak sweep (no rejection / shallow)",
+     "count": 75
+    }
+   ],
+   "validSetups": 0,
+   "trades": 0,
+   "winRate": null,
+   "expectancyR": null,
+   "profitFactor": null,
+   "maxDrawdownR": 0,
+   "netR": 0
+  }
+ ],
+ "rejections": [
+  {
+   "code": "WEAK_MSS",
+   "label": "MSS too old (outside window)",
+   "count": 1268
+  },
+  {
+   "code": "REGIME_UNCLEAR",
+   "label": "Market regime UNCLEAR",
+   "count": 783
+  },
+  {
+   "code": "NO_MSS",
+   "label": "No MSS/CHOCH",
+   "count": 603
+  },
+  {
+   "code": "NO_HTF_BIAS",
+   "label": "No HTF bias",
+   "count": 469
+  },
+  {
+   "code": "NO_FVG",
+   "label": "No FVG in sequence",
+   "count": 388
+  },
+  {
+   "code": "VOL_BLOCKED",
+   "label": "Volatility regime blocked",
+   "count": 363
+  },
+  {
+   "code": "INVALID_STOP",
+   "label": "Invalid structural stop (too tight/wide)",
+   "count": 105
+  },
+  {
+   "code": "SETUP_EXPIRED",
+   "label": "Setup expired (order unfilled)",
+   "count": 43
+  },
+  {
+   "code": "WEAK_DISPLACEMENT",
+   "label": "Weak displacement",
+   "count": 36
+  },
+  {
+   "code": "INSUFFICIENT_RR",
+   "label": "Insufficient RR",
+   "count": 14
+  },
+  {
+   "code": "INVALID_FVG",
+   "label": "FVG invalid (mitigated / consumed / stale)",
+   "count": 7
+  },
+  {
+   "code": "DUPLICATE_SETUP",
+   "label": "Duplicate setup (event already traded)",
+   "count": 1
+  }
+ ],
+ "ambiguityNote": null,
+ "notes": [
+  "Strictness preset: BALANCED — HTF + sweep-or-liquidity-event + MSS + displacement + FVG/OB + RR (P/D, KZ optional).",
+  "Models enabled: A_SWEEP_REVERSAL, B_FVG_CONTINUATION, C_OB_REVERSAL, D_FVG_OB_CONFLUENCE. Core requirements (spec §5): HTF context + liquidity event + MSS/CHOCH + displacement + entry zone + structural SL + valid target. SMT, kill zone, FVG+OB overlap, premium/discount and session liquidity are OPTIONAL score confluence.",
+  "Stops and targets are STRUCTURAL (sweep extremes, protected swings, liquidity pools, PDH/PDL, PWH/PWL, session and external range liquidity) — never fixed R multiples. The minRR gate asks whether AT LEAST ONE structural target is minRR away (TP3 = farthest level, not the 3rd-nearest).",
+  "Kill zones are DST-aware market-local windows (London 07:00–10:00 Europe/London, NY AM 09:30–12:00 and NY PM 13:30–16:00 America/New_York, Asia 00:00–06:00 UTC).",
+  "Accounting: R is measured against each trade's INITIAL stop. Partial exits are share-weighted legs. Breakeven moves take effect the bar after activation.",
+  "Costs model — XAUUSD: spread 0.3 + slippage 0.05/side + commission 0.1 bp/side (price units). Gross R and cost R are reported separately; expectancy is shown gross AND net.",
+  "Same-candle SL/TP ambiguity: pessimistic model. Pessimistic assumes the stop fills first.",
+  "Sessions traded: ALL (kill zone is a score confluence). Volatility blocks: EXTREME. UNCLEAR market regime → NO TRADE.",
+  "History is clean: chronological, gap-free (≤ weekend), valid OHLC.",
+  "Silver feed unavailable — SMT confirmation disabled for this run.",
+  "Rule-based historical study for strategy evaluation only — past performance does not guarantee future results. Never describe a small sample as statistically reliable."
+ ]
+}

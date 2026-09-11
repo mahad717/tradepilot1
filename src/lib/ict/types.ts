@@ -546,7 +546,30 @@ export interface DataQuality {
   gaps: number;
   invalidOhlc: number;
   largestGapBars: number;
+  /** weekend candles dropped before the run (dead-market protection) */
+  weekendCandles: number;
   ok: boolean;
+  note: string;
+}
+
+/**
+ * Pending-order telemetry (what happened between "order placed" and
+ * "filled / expired"). The trading semantics stay identical — the extra
+ * observation window (48 bars) only measures what WOULD have happened.
+ */
+export interface OrderFlowSummary {
+  placed: number;
+  filled: number;
+  expired: number;
+  invalidated: number;
+  /** orders whose entry WAS touched after the configured expiry window */
+  lateFills: number;
+  /** bars from decision to fill, bucketed, for FILLED orders */
+  fillLatency: { le3: number; le6: number; le12: number; le24: number; le48: number };
+  /** cumulative fill rate if the expiry window were 6/12/24/48 bars */
+  fillRateAt: { bars6: number | null; bars12: number | null; bars24: number | null; bars48: number | null };
+  /** expired orders: how close price came to the entry (in R), median */
+  medianClosestApproachR: number | null;
   note: string;
 }
 

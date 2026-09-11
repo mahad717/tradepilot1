@@ -13,7 +13,7 @@
 // audit, rejected-setup samples and the Conservative/Balanced/Aggressive
 // comparison. All numbers come from the executed run — nothing fitted.
 import "server-only";
-import { getCandles } from "@/lib/market";
+import { getCandles, getCandlesDeep, dropWeekendCandles } from "@/lib/market";
 import type { IntervalKey, SymbolKey } from "@/lib/market/types";
 import {
   DEFAULT_CONFIG,
@@ -29,9 +29,9 @@ import { simulateTrade, type ExecuteConfig } from "./execution";
 import {
   computeMetrics, lossReasonTable, mfeMaeAnalysis, robustnessFlags, buildReport,
   funnelStages, rejectionTable, modelPerformance, rrDiagnostics, sessionDiagnostics,
-  sampleCategory, SAMPLE_CATEGORIES,
+  sampleCategory, SAMPLE_CATEGORIES, summarizeOrderFlow,
   type BacktestReport, type FunnelRow, type LossReasonRow, type MfeMaeAnalysis,
-  type RejectionRow, type ModelPerformanceRow,
+  type RejectionRow, type ModelPerformanceRow, type PendingTelemetryInput,
   type RobustnessFlags,
   type SessionStat, type ScoreBucketStat, type ManagementRates, type SampleCategory,
 } from "./diagnostics";
@@ -39,7 +39,7 @@ import { runMonteCarlo, type MonteCarloResult } from "./montecarlo";
 import { walkForward, type WalkForwardResult } from "./walkforward";
 import { smtSeries, type SmtEvent } from "./smtseries";
 import { DEFAULT_COSTS, describeCosts } from "./costs";
-import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics } from "./types";
+import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary } from "./types";
 import type { Candle } from "@/lib/market/types";
 
 export interface BacktestResult {
@@ -61,6 +61,9 @@ export interface BacktestResult {
   sessionFilterDiagnostics: SessionDiagnostics;
   rejectedSamples: RejectedSetupSample[];
   dataQuality: DataQuality;
+  orderFlow: OrderFlowSummary;
+  /** same-candle SL+TP collisions — 0 means the ambiguity model had no effect */
+  ambiguityCollisions: number;
   strictness: Strictness;
   strictnessNote: string;
   lossReasons: LossReasonRow[];
@@ -94,11 +97,24 @@ export interface BacktestOptions {
   strictness?: Strictness;
 }
 
-/** Data-quality audit of the fetched history (spec §18-historical data). */
-function auditDataQuality(candles: Candle[], intervalSec: number): DataQuality {
+/**
+ * Data-quality audit of the fetched history (spec §18-historical data).
+ * The regular Fri-close → Sun-reopen gap (≤ 60h, Fri/Sat/Sun → Sun/Mon) is
+ * EXPECTED for spot metals and is not counted as a data issue.
+ */
+function isWeekendGap(fromSec: number, toSec: number): boolean {
+  const a = new Date(fromSec * 1000);
+  const b = new Date(toSec * 1000);
+  const da = a.getUTCDay();
+  const db = b.getUTCDay();
+  return (da === 5 || da === 6 || da === 0) && (db === 0 || db === 1) && toSec - fromSec <= 60 * 3600;
+}
+
+function auditDataQuality(candles: Candle[], intervalSec: number, weekendDropped: number): DataQuality {
   let duplicates = 0;
   let outOfOrder = 0;
   let gaps = 0;
+  let weekendGaps = 0;
   let invalidOhlc = 0;
   let largestGapBars = 0;
   for (let i = 0; i < candles.length; i++) {
@@ -112,34 +128,49 @@ function auditDataQuality(candles: Candle[], intervalSec: number): DataQuality {
       else if (dt > intervalSec) {
         gaps++;
         largestGapBars = Math.max(largestGapBars, Math.round(dt / intervalSec));
+        if (isWeekendGap(p.time, c.time)) weekendGaps++;
       }
     }
   }
-  const ok = duplicates === 0 && outOfOrder === 0 && invalidOhlc === 0 && largestGapBars <= 4;
+  const unexpectedGaps = gaps - weekendGaps;
+  const ok = duplicates === 0 && outOfOrder === 0 && invalidOhlc === 0 && unexpectedGaps === 0;
   const issues: string[] = [];
   if (duplicates) issues.push(`${duplicates} duplicate timestamps`);
   if (outOfOrder) issues.push(`${outOfOrder} out-of-order candles`);
   if (invalidOhlc) issues.push(`${invalidOhlc} invalid OHLC rows`);
-  if (gaps) issues.push(`${gaps} gaps (largest ${largestGapBars} bars)`);
+  if (unexpectedGaps) issues.push(`${unexpectedGaps} unexpected gaps (largest ${largestGapBars} bars)`);
+  const clean = issues.length === 0;
+  const gapNote = gaps > 0 ? ` ${gaps} gap${gaps === 1 ? "" : "s"} (${weekendGaps} expected weekend Fri→Sun reopen, largest ${largestGapBars} bars).` : "";
+  const note = `${clean ? "History is clean: chronological, valid OHLC" : `Data issues: ${issues.join("; ")}`}.${gapNote} ${weekendDropped} weekend candle${weekendDropped === 1 ? "" : "s"} dropped before the run (Sat + Sun<22:00 UTC).`;
   return {
     bars: candles.length,
     duplicates, outOfOrder, gaps, invalidOhlc, largestGapBars,
+    weekendCandles: weekendDropped,
     ok,
-    note: issues.length ? `Data issues: ${issues.join("; ")}.` : "History is clean: chronological, gap-free (≤ weekend), valid OHLC.",
+    note,
   };
 }
 
 /** Public entry — fetches data then runs the pure core. */
 export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult> {
   const { symbol, interval } = opts;
-  const bars = Math.min(Math.max(opts.bars ?? 1500, 400), 5000);
+  const bars = Math.min(Math.max(opts.bars ?? 1500, 400), 25000);
   const strictness = opts.strictness ?? "balanced";
   const cfg: EngineConfig = { ...DEFAULT_CONFIG, ...presetFor(strictness), ...opts.config };
   if (!cfg.costs.XAUUSD) cfg.costs = { ...DEFAULT_COSTS };
 
-  const { candles, source } = await getCandles(symbol, interval, bars);
+  // Deep windows (sample-size starvation is the #1 honest blocker) are
+  // assembled from paginated ≤5000-bar chunks; standard windows use the
+  // single-request path.
+  const fetchRes = bars > 5000
+    ? await getCandlesDeep(symbol, interval, bars)
+    : await getCandles(symbol, interval, bars);
+  const rawCandles = fetchRes.candles;
+  // Spot metals feeds quote ~24/7 — drop dead weekend hours so ICT session
+  // logic never fires in a closed market. Counted in the data-quality audit.
+  const { candles, dropped: weekendDropped } = dropWeekendCandles(rawCandles);
   if (candles.length < 150) throw new Error("Not enough historical candles for a backtest");
-  const dataQuality = auditDataQuality(candles, intervalSecondsOf(interval));
+  const dataQuality = auditDataQuality(candles, intervalSecondsOf(interval), weekendDropped);
 
   // silver for SMT confirmation (optional — simulated silver is labelled)
   let silver: Candle[] = [];
@@ -147,7 +178,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   if (opts.includeSilverForSmt !== false && cfg.models.includes("E_SMT_REVERSAL")) {
     try {
       const res = await getCandles("XAGUSD", interval, Math.min(bars, 5000));
-      silver = res.candles;
+      silver = dropWeekendCandles(res.candles).candles;
       silverSource = res.source;
     } catch {
       silver = [];
@@ -171,7 +202,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     }
   }
 
-  return runBacktestCore(symbol, interval, candles, smtEvents, cfg, source, silverSource, ltfCandles, ltfSeconds, strictness, dataQuality);
+  return runBacktestCore(symbol, interval, candles, smtEvents, cfg, fetchRes.source, silverSource, ltfCandles, ltfSeconds, strictness, dataQuality);
 }
 
 function intervalSecondsOf(interval: IntervalKey): number {
@@ -216,6 +247,8 @@ export function runBacktestCore(
   const executeOpts = { ltfCandles, ltfSeconds, parentSeconds: ctx.intervalSec };
 
   const trades: TradeRecord[] = [];
+  const pendingTelemetry: PendingTelemetryInput[] = [];
+  let ambiguityCollisions = 0;
   const cooldown: CooldownState = {
     usedSweepKeys: new Set(),
     blacklistedZones: new Set(),
@@ -243,6 +276,8 @@ export function runBacktestCore(
     ctx.funnel.ordersPlaced++;
 
     const res = simulateTrade(candles, setup, execute, symbol, interval, executeOpts);
+    pendingTelemetry.push(res.pending);
+    ambiguityCollisions += res.ambiguousBars;
     if (res.filled && res.trade) {
       trades.push(res.trade);
       ctx.funnel.ordersFilled++;
@@ -275,7 +310,7 @@ export function runBacktestCore(
 
   const dq = dataQuality ?? {
     bars: candles.length, duplicates: 0, outOfOrder: 0, gaps: 0, invalidOhlc: 0,
-    largestGapBars: 0, ok: true, note: "Synthetic series — data-quality audit skipped.",
+    largestGapBars: 0, weekendCandles: 0, ok: true, note: "Synthetic series — data-quality audit skipped.",
   };
 
   const notes = [
@@ -288,6 +323,9 @@ export function runBacktestCore(
     `Same-candle SL/TP ambiguity: ${cfg.ambiguity} model. Pessimistic assumes the stop fills first.`,
     `Sessions traded: ${cfg.sessions.length ? cfg.sessions.join(", ") : "ALL (kill zone is a score confluence)"}. Volatility blocks: ${cfg.blockedVolRegimes.join(", ") || "none"}. UNCLEAR market regime → NO TRADE.`,
     dq.note,
+    `Pending-order flow: ${ctx.funnel.ordersPlaced} placed → ${ctx.funnel.ordersFilled} filled, ${ctx.funnel.ordersExpired} expired within the ${cfg.orderExpiryBars}-bar window, ${pendingTelemetry.filter((p) => p.outcome === "invalidated").length} zone-invalidated. ${summarizeOrderFlow(pendingTelemetry, cfg.orderExpiryBars).note}`.trim(),
+    `Same-candle SL+TP collisions: ${ambiguityCollisions}.${ambiguityCollisions === 0 ? " The ambiguity model had no effect on this run." : ""}`,
+    `Weekend candles dropped before the run: ${dq.weekendCandles} (spot metals feeds quote through closed weekends — ICT sessions must not fire there).`,
     silverSource === "SIMULATED"
       ? "Silver feed is SIMULATED — SMT confirmation is illustrative only on this run."
       : silverSource === "unavailable"
@@ -315,6 +353,8 @@ export function runBacktestCore(
     sessionFilterDiagnostics: sessionDiagnostics(ctx.diag),
     rejectedSamples: ctx.diag.samples,
     dataQuality: dq,
+    orderFlow: summarizeOrderFlow(pendingTelemetry, cfg.orderExpiryBars),
+    ambiguityCollisions,
     strictness,
     strictnessNote: STRICTNESS_PRESETS[strictness],
     lossReasons: lossReasonTable(trades),

@@ -62,6 +62,7 @@ import { classifySweep, type SweepAssessment } from "./sweepquality";
 import { fvgQuality, obQuality } from "./zonequality";
 import { buildTargetLadder, prevExtremes, selectTradeTargets, type StructuralTarget } from "./targets";
 import { sessionKeyAt, SESSION_LABELS } from "./sessions";
+import { mulberry32 } from "./rng";
 import type { IntervalKey, SymbolKey } from "@/lib/market/types";
 import { intervalSeconds } from "@/lib/market/types";
 
@@ -297,7 +298,7 @@ function bump(map: Map<RejectionCode, number>, code: RejectionCode) {
 }
 
 /** Depth rank of a rejection — how far the candidate progressed (higher = deeper). */
-const STAGE_DEPTH: Record<RejectionCode, number> = {
+export const STAGE_DEPTH: Record<RejectionCode, number> = {
   NO_HTF_BIAS: 0, REGIME_UNCLEAR: 0, VOL_BLOCKED: 0,
   OUTSIDE_SESSION: 1,
   NO_LIQUIDITY_SWEEP: 2, WEAK_SWEEP: 3,
@@ -415,9 +416,10 @@ export function buildSeriesContext(
   const { biasAt } = htfBiasSeries(candles, intervalSec, htfSecondsFor(intervalSec), 2);
 
   // zones (with global mitigation markers consumed causally by index)
+  // FVG mitigation = midpoint TOUCH (zone no longer fresh — conservative).
+  // OB invalidation = CLOSE through midpoint (a wick tap is the retest we trade).
   const fvgZones = detectFvg(candles, 100000, true);
-  const medianAtr = [...atrS].sort((a, b) => a - b)[Math.floor(atrS.length / 2)] || 1;
-  const obZones = detectOrderBlocks(candles, medianAtr, 1.4, 100000, true);
+  const obZones = detectOrderBlocks(candles, atrS, 1.2, 100000, true);
   const zones = [...fvgZones, ...obZones];
   const zoneMitigatedAt = new Map<string, number>();
   const zoneCreatedIndex = new Map<string, number>();
@@ -432,13 +434,19 @@ export function buildSeriesContext(
     const mid = (z.top + z.bottom) / 2;
     for (let i = z.startIndex + (isFvg ? 3 : 2); i < candles.length; i++) {
       const c = candles[i];
-      if (z.direction === "BULLISH" && c.low <= mid) {
-        zoneMitigatedAt.set(z.id, i);
-        break;
+      if (z.direction === "BULLISH") {
+        const dead = isFvg ? c.low <= mid : c.close < mid;
+        if (dead) {
+          zoneMitigatedAt.set(z.id, i);
+          break;
+        }
       }
-      if (z.direction === "BEARISH" && c.high >= mid) {
-        zoneMitigatedAt.set(z.id, i);
-        break;
+      if (z.direction === "BEARISH") {
+        const dead = isFvg ? c.high >= mid : c.close > mid;
+        if (dead) {
+          zoneMitigatedAt.set(z.id, i);
+          break;
+        }
       }
     }
   }
@@ -692,8 +700,18 @@ function evaluateModel(
     zone: null, entry: null, initialStop: null, target: null, rr: null, maxRr: null, score: null,
   };
   const finish = (rejection: RejectionCode | null, candidate: Setup | null = null): ModelEval => {
-    if (rejection && diag.sampleCounter++ % 7 === 0 && diag.samples.length < 48) {
-      captureSample(ctx, i, cfg, model, side, rejection, partial, session);
+    if (rejection) {
+      // Reservoir sampling (Vitter R) — deterministic via a seeded counter rng.
+      // Keeps inspector samples spread across the WHOLE window instead of
+      // clustering on the first bars of the run (spec §19).
+      const n = ++diag.sampleCounter;
+      const cap = 48;
+      const slot = diag.samples.length < cap ? diag.samples.length : Math.floor(mulberry32(0x9e3779b9 ^ n)() * n);
+      if (slot < cap) {
+        const sample = buildSample(ctx, i, cfg, model, side, rejection, partial, session);
+        if (diag.samples.length < cap) diag.samples.push(sample);
+        else diag.samples[slot] = sample;
+      }
     }
     return { candidate, rejection };
   };
@@ -1405,7 +1423,7 @@ export function probeSetupState(ctx: SeriesContext, i: number, cfg: EngineConfig
   return { side, conditions, waitingFor, perModel, barTime: c.time };
 }
 
-function captureSample(
+function buildSample(
   ctx: SeriesContext,
   i: number,
   cfg: EngineConfig,
@@ -1414,7 +1432,7 @@ function captureSample(
   rejection: RejectionCode,
   partial: NonNullable<ModelEval["partial"]>,
   session: string
-) {
+): RejectedSetupSample {
   const { candles } = ctx;
   const win = 20;
   const from = Math.max(0, i - win);
@@ -1424,7 +1442,7 @@ function captureSample(
     const cc = candles[k];
     window.push({ t: cc.time, o: cc.open, h: cc.high, l: cc.low, c: cc.close });
   }
-  ctx.diag.samples.push({
+  return {
     time: candles[i].time,
     index: i,
     model,
@@ -1441,7 +1459,7 @@ function captureSample(
     trace: null, // trace is built only for valid candidates; partial info lives in the fields above
     candles: window,
     candleStartIndex: from,
-  });
+  };
 }
 
 // ---------------------------------------------------------------------------

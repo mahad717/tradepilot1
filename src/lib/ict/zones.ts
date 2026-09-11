@@ -66,23 +66,31 @@ export function detectFvg(candles: Candle[], maxZones = 8, includeMitigated = fa
  *   `displacementFactor × ATR` (institutional displacement).
  *   Bearish OB: mirrored.
  * Zone = the opposing candle's full range (wick to wick).
+ *
+ * Volatility reference is the PER-BAR ATR at the displacement candle (the
+ * zone becomes knowable when that candle closes) — a single series-wide
+ * scalar both misjudges regimes and subtly leaks future information.
+ *
+ * Invalidation: a candle CLOSING beyond the zone midpoint (ICT invalidation).
+ * A wick tap is the retest we want to trade — it must NOT kill the block.
  * Same look-ahead caveat as detectFvg — use includeMitigated for walk-forward.
  */
 export function detectOrderBlocks(
   candles: Candle[],
-  atrValue: number,
-  displacementFactor = 1.8,
+  atrValues: number[] | number,
+  displacementFactor = 1.2,
   maxZones = 6,
   includeMitigated = false
 ): Zone[] {
   const zones: Zone[] = [];
-  if (atrValue <= 0) return zones;
-
-  const minBody = displacementFactor * atrValue * 0.6;
+  const atrAt = (i: number) => (Array.isArray(atrValues) ? atrValues[i] : atrValues) ?? 0;
 
   for (let i = 1; i < candles.length - 1; i++) {
     const ob = candles[i];
     const next = candles[i + 1];
+    const atrDisp = atrAt(i + 1) || atrAt(i);
+    if (!(atrDisp > 0)) continue;
+    const minBody = displacementFactor * atrDisp;
     const nextBody = Math.abs(next.close - next.open);
     if (nextBody < minBody) continue;
 
@@ -114,16 +122,17 @@ export function detectOrderBlocks(
     }
   }
 
-  // mitigation: price trading back through the zone body
+  // invalidation: a candle CLOSING through the zone midpoint (ICT).
+  // Wick touches are retests (potential entry fills), not invalidation.
   for (const z of zones) {
     for (let i = z.startIndex + 2; i < candles.length; i++) {
       const c = candles[i];
       const mid = (z.top + z.bottom) / 2;
-      if (z.direction === "BULLISH" && c.low <= mid) {
+      if (z.direction === "BULLISH" && c.close < mid) {
         z.mitigated = true;
         break;
       }
-      if (z.direction === "BEARISH" && c.high >= mid) {
+      if (z.direction === "BEARISH" && c.close > mid) {
         z.mitigated = true;
         break;
       }

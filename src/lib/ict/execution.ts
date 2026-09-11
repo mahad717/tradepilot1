@@ -46,6 +46,22 @@ export interface ExecuteResult {
   trade: TradeRecord | null;
   /** index of the candle on which the last decision happened */
   endIndex: number;
+  /** number of bars where BOTH the stop and at least one target were touched in the same candle */
+  ambiguousBars: number;
+  /** pending-order telemetry — observation beyond the expiry window never changes trading semantics */
+  pending: PendingTelemetry;
+}
+
+export interface PendingTelemetry {
+  outcome: "filled" | "expired" | "invalidated";
+  /** bars from the decision bar to the fill (≥1), null when never touched */
+  fillBarOffset: number | null;
+  /** bars to a touch that arrived AFTER the configured expiry (observation only) */
+  lateFillBarOffset: number | null;
+  /** closest approach to the entry in R (0 = touched) */
+  closestApproachR: number | null;
+  /** zone invalidated (close beyond the far edge) inside the observation window */
+  invalidatedDuringObservation: boolean;
 }
 
 interface LegDraft {
@@ -116,12 +132,35 @@ export function simulateTrade(
   let fillIndex = -1;
   let fillPrice = entry;
   let endIndex = decidedIndex + 1;
+  let ambiguousBars = 0;
+  // telemetry (observation only — never alters trading semantics)
+  const OBS_HORIZON = 48;
+  let closestApproachR: number | null = null;
+  let invalidatedDuringObservation = false;
+  let lateFillBarOffset: number | null = null;
+  const trackApproach = (c: Candle) => {
+    // distance the price still needs to travel TO the entry (≥0 unfilled, ≤0 touched):
+    // long fills when price dips to entry → c.low - entry; short fills on a rise → entry - c.high
+    const dist = long ? (c.low - entry) / risk : (entry - c.high) / risk;
+    if (dist <= 0) {
+      closestApproachR = 0;
+    } else if (closestApproachR === null || dist < closestApproachR) {
+      closestApproachR = dist;
+    }
+  };
   for (let j = decidedIndex + 1; j <= Math.min(decidedIndex + cfg.orderExpiryBars, candles.length - 1); j++) {
     const c = candles[j];
+    trackApproach(c);
     const invalidated = long ? c.close < setup.zone.bottom : c.close > setup.zone.top;
     if (invalidated) {
       audit.push({ time: c.time, event: "Order cancelled", detail: `zone invalidated (close ${c.close.toFixed(2)} beyond far edge)` });
-      return { filled: false, trade: null, endIndex: j };
+      return {
+        filled: false,
+        trade: null,
+        endIndex: j,
+        ambiguousBars,
+        pending: { outcome: "invalidated", fillBarOffset: null, lateFillBarOffset: null, closestApproachR, invalidatedDuringObservation: true },
+      };
     }
     const touched = long ? c.low <= entry : c.high >= entry;
     if (touched) {
@@ -136,7 +175,29 @@ export function simulateTrade(
   }
   if (fillIndex === -1) {
     audit.push({ time: candles[endIndex].time, event: "Order expired", detail: `unfilled after ${cfg.orderExpiryBars} bars` });
-    return { filled: false, trade: null, endIndex };
+    // observation-only continuation: did the entry eventually come, and how
+    // close did price get? Reported as diagnostics — NO trade is simulated.
+    for (let j = endIndex + 1; j <= Math.min(decidedIndex + OBS_HORIZON, candles.length - 1); j++) {
+      const c = candles[j];
+      trackApproach(c);
+      const invalidated = long ? c.close < setup.zone.bottom : c.close > setup.zone.top;
+      if (invalidated) {
+        invalidatedDuringObservation = true;
+        break;
+      }
+      const touched = long ? c.low <= entry : c.high >= entry;
+      if (touched) {
+        lateFillBarOffset = j - decidedIndex;
+        break;
+      }
+    }
+    return {
+      filled: false,
+      trade: null,
+      endIndex,
+      ambiguousBars,
+      pending: { outcome: "expired", fillBarOffset: null, lateFillBarOffset, closestApproachR, invalidatedDuringObservation },
+    };
   }
 
   // ---- 2. position sizing (spec #3) ---------------------------------------
@@ -239,6 +300,7 @@ export function simulateTrade(
     const hitTargets = targets.filter((t) => (long ? c.high >= t.price : c.low <= t.price));
 
     if (hitStop && hitTargets.length > 0) {
+      ambiguousBars++;
       let stopWasFirst: boolean;
       switch (cfg.ambiguity) {
         case "optimistic":
@@ -408,7 +470,7 @@ export function simulateTrade(
     audit,
   };
 
-  return { filled: true, trade, endIndex: exitIndex };
+  return { filled: true, trade, endIndex: exitIndex, ambiguousBars, pending: { outcome: "filled", fillBarOffset: fillIndex - decidedIndex, lateFillBarOffset: null, closestApproachR: 0, invalidatedDuringObservation: false } };
 }
 
 function classifyOutcome(

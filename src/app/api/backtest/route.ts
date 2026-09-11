@@ -51,8 +51,8 @@ export async function GET(req: Request) {
   if (!isIntervalKey(interval)) {
     return NextResponse.json({ error: "Unknown interval" }, { status: 400 });
   }
-  if (!Number.isFinite(bars) || bars < 400 || bars > 5000) {
-    return NextResponse.json({ error: "bars must be between 400 and 5000" }, { status: 400 });
+  if (!Number.isFinite(bars) || bars < 400 || bars > 25000) {
+    return NextResponse.json({ error: "bars must be between 400 and 25000 (windows above 5000 are assembled from paginated chunks)" }, { status: 400 });
   }
   if (!Number.isFinite(minRR) || minRR < 0.5 || minRR > 10) {
     return NextResponse.json({ error: "minRR must be between 0.5 and 10" }, { status: 400 });

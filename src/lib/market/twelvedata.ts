@@ -70,12 +70,14 @@ interface TdSeriesResponse {
 async function upstreamTimeSeries(
   tdSymbol: string,
   interval: IntervalKey,
-  outputsize: number
+  outputsize: number,
+  endDate?: string
 ): Promise<Candle[]> {
   if (!API_KEY) throw new Error("TWELVEDATA_API_KEY is not configured");
   if (!takeToken()) throw new UpstreamRateLimitedError();
 
-  const url = `${BASE}/time_series?symbol=${encodeURIComponent(tdSymbol)}&interval=${interval}&outputsize=${outputsize}&apikey=${API_KEY}`;
+  let url = `${BASE}/time_series?symbol=${encodeURIComponent(tdSymbol)}&interval=${interval}&outputsize=${outputsize}&timezone=UTC&apikey=${API_KEY}`;
+  if (endDate) url += `&end_date=${encodeURIComponent(endDate)}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`TwelveData HTTP ${res.status}`);
   const json = (await res.json()) as TdSeriesResponse;
@@ -93,6 +95,72 @@ async function upstreamTimeSeries(
     .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.close))
     .sort((a, b) => a.time - b.time);
   return candles;
+}
+
+function tdDatetime(timeSec: number): string {
+  return new Date(timeSec * 1000).toISOString().slice(0, 19).replace("T", " ");
+}
+
+const INTERVAL_SEC: Record<string, number> = {
+  "5min": 300,
+  "15min": 900,
+  "1h": 3600,
+  "4h": 14400,
+  "1day": 86400,
+};
+
+/** Long-TTL cache for merged deep-history windows (rate-limit friendly). */
+const deepCache = new Map<string, CacheEntry<{ candles: Candle[]; requests: number }>>();
+
+/**
+ * Deep-history fetch: walks backwards in ≤5000-candle chunks using end_date
+ * pagination until `totalBars` unique candles are assembled (or upstream runs
+ * dry / the request budget is spent). Each chunk is one API credit, so the
+ * merged window is cached with a long TTL.
+ */
+export async function fetchCandlesRangeLive(
+  tdSymbol: string,
+  interval: IntervalKey,
+  totalBars: number
+): Promise<{ candles: Candle[]; stale: boolean; requests: number }> {
+  const key = `${tdSymbol}:${interval}:deep:${totalBars}`;
+  const ttl = 15 * 60_000;
+  const cached = deepCache.get(key);
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < ttl) {
+    return { candles: cached.data.candles, stale: false, requests: cached.data.requests };
+  }
+
+  const stepSec = INTERVAL_SEC[interval] ?? 900;
+  const chunkSize = 5000;
+  const maxRequests = Math.min(Math.ceil(totalBars / chunkSize) + 1, 8);
+  const byTime = new Map<number, Candle>();
+  let oldest: number | null = null;
+  let requests = 0;
+  let stale = false;
+
+  try {
+    while (byTime.size < totalBars && requests < maxRequests) {
+      const chunk = await upstreamTimeSeries(tdSymbol, interval, chunkSize, oldest !== null ? tdDatetime(oldest - stepSec) : undefined);
+      requests++;
+      if (chunk.length === 0) break;
+      const before = byTime.size;
+      for (const c of chunk) byTime.set(c.time, c);
+      const chunkOldest = chunk[0].time;
+      if (oldest !== null && chunkOldest >= oldest && byTime.size === before) break; // no progress → upstream dry
+      oldest = chunkOldest;
+    }
+  } catch (err) {
+    if (byTime.size === 0 && cached) {
+      return { candles: cached.data.candles, stale: true, requests: cached.data.requests };
+    }
+    if (byTime.size === 0) throw err;
+    stale = true; // partial window on mid-fetch failure — flagged, still usable
+  }
+
+  const candles = [...byTime.values()].sort((a, b) => a.time - b.time);
+  deepCache.set(key, { data: { candles, requests }, fetchedAt: now });
+  return { candles, stale, requests };
 }
 
 interface TdQuoteResponse {
