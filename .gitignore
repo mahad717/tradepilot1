@@ -64,7 +64,8 @@ server.log
 /download/
 /upload/
 /worklog.md
-/scripts/
+/scripts/*
+!/scripts/cf-cache-assets.mjs
 /agent-ctx/
 /examples/
 /mini-services/
