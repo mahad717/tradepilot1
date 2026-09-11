@@ -6,6 +6,10 @@ export const alt = "TradePilot article social preview";
 export const size = OG_SIZE;
 export const contentType = OG_CONTENT_TYPE;
 
+// Render per-request: prerendered image routes are not served by the
+// static-assets incremental cache on Cloudflare Workers.
+export const dynamic = "force-dynamic";
+
 /** Unique per-article OG image generated from article metadata. */
 export default async function ArticleOgImage({
   params,

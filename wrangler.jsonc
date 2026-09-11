@@ -1,0 +1,40 @@
+{
+  // ---------------------------------------------------------------------------
+  // TradePilot on Cloudflare Workers — via @opennextjs/cloudflare.
+  //
+  // Build:  `bun run build`   → opennextjs-cloudflare build (Next.js → Worker)
+  // Deploy: `npx wrangler deploy` (Workers Builds runs this automatically)
+  // Local:  `bun run preview` → build + serve on workerd (http://localhost:8787)
+  // ---------------------------------------------------------------------------
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tradepilot1",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  }
+
+  // ---------------------------------------------------------------------------
+  // OPTIONAL — saved signals & backtest history (Prisma + Cloudflare D1).
+  // The app deploys and runs fine WITHOUT this: those two features answer a
+  // clean HTTP 503 until the binding exists. To enable them:
+  //
+  //   1. npx wrangler d1 create tradepilot-db
+  //   2. Paste the printed database_id below and uncomment the block.
+  //   3. npx wrangler d1 execute tradepilot-db --remote --file=d1/schema.sql
+  //   4. Redeploy (`git push` — Workers Builds rebuilds automatically).
+  //
+  // ---------------------------------------------------------------------------
+  // "d1_databases": [
+  //   {
+  //     "binding": "DB",
+  //     "database_name": "tradepilot-db",
+  //     "database_id": "PASTE_YOUR_D1_DATABASE_ID_HERE"
+  //   }
+  // ]
+}

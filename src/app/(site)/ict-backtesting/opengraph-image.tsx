@@ -4,6 +4,10 @@ export const alt = "ICT backtesting for gold and silver — bar replay without l
 export const size = OG_SIZE;
 export const contentType = OG_CONTENT_TYPE;
 
+// Render per-request: prerendered image routes are not served by the
+// static-assets incremental cache on Cloudflare Workers.
+export const dynamic = "force-dynamic";
+
 export default createOGImage({
   title: "ICT backtesting without look-ahead bias",
   subtitle:

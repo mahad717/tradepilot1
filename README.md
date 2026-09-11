@@ -52,6 +52,69 @@ bun run dev
 | `NEXT_PUBLIC_BING_VERIFICATION` | Bing Webmaster token (optional) |
 | `NEXT_PUBLIC_TWITTER_HANDLE` | twitter:site handle (optional) |
 
+## Deploying to Cloudflare Workers
+
+The app targets Cloudflare Workers via **@opennextjs/cloudflare**
+(`wrangler.jsonc` + `open-next.config.ts`).
+
+```bash
+bun run cf:build     # opennextjs-cloudflare build + copy prerender cache into assets
+bun run preview      # run the built Worker locally on workerd (http://localhost:8787)
+bun run deploy       # opennextjs-cloudflare deploy (build + wrangler deploy)
+```
+
+### Cloudflare Builds configuration (Workers → Settings → Builds)
+
+| Field | Value |
+|---|---|
+| Build command | `bun run cf:build` |
+| Deploy command | `npx wrangler deploy` |
+| Root directory | `/` |
+| Production branch | `main` |
+
+### Variables & secrets
+
+**Build variables** (Builds → Variables and secrets) — `NEXT_PUBLIC_*` values are
+inlined at compile time, so the build must see them:
+
+| Name | Example |
+|---|---|
+| `NEXT_PUBLIC_SITE_URL` | `https://tradepilot1.<your-subdomain>.workers.dev` |
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://xxxx.supabase.co` |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | `eyJ...` |
+| `NEXT_PUBLIC_GA_ID` / `NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION` / `NEXT_PUBLIC_BING_VERIFICATION` / `NEXT_PUBLIC_TWITTER_HANDLE` | optional |
+
+**Runtime variables & secrets** (Settings → Variables and Secrets):
+
+| Name | Type | Purpose |
+|---|---|---|
+| `TWELVEDATA_API_KEY` | Secret | Live gold market data |
+| `TWELVEDATA_ENABLE_XAG` | Text | `1` to enable live silver (paid plan only) |
+
+### Saved signals & backtests on Workers (optional)
+
+Workers have no filesystem, so the terminal's persistence layer uses
+**Cloudflare D1** through Prisma's driver adapter
+(`src/lib/db.ts` auto-detects the environment; local dev keeps using SQLite):
+
+1. `npx wrangler d1 create tradepilot-db`
+2. Uncomment the `d1_databases` block in `wrangler.jsonc` and paste the
+   printed `database_id`
+3. `npx wrangler d1 execute tradepilot-db --remote --file=d1/schema.sql`
+4. Redeploy
+
+Until then the site works normally — the save endpoints answer a clean
+HTTP 503.
+
+### Notes
+
+- Prerendered pages and OG images are served from Workers Assets via the
+  static-assets incremental cache (`open-next.config.ts`); the OG images
+  themselves render per-request with `next/og` (satori on workerd).
+- Build uses webpack (`next build --webpack`) because OpenNext relies on
+  webpack output tracing; Turbopack builds lack `.nft.json` files.
+- Local dev is unaffected: `bun run dev` runs plain `next dev`.
+
 ## Publishing a new blog article
 
 Add a JSON file to `src/content/articles/` following the existing schema

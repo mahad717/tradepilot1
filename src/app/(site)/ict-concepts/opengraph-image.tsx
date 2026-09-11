@@ -4,6 +4,10 @@ export const alt = "ICT and Smart Money Concepts glossary — FVG, order blocks,
 export const size = OG_SIZE;
 export const contentType = OG_CONTENT_TYPE;
 
+// Render per-request: prerendered image routes are not served by the
+// static-assets incremental cache on Cloudflare Workers.
+export const dynamic = "force-dynamic";
+
 export default createOGImage({
   title: "ICT & SMC concepts glossary",
   subtitle: "Plain-language definitions of every concept, each linked to a full guide.",

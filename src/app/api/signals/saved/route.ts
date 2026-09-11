@@ -1,13 +1,28 @@
 import { NextResponse } from "next/server";
 import { getAuthUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { getDb, DbUnavailableError } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Persistence features need a database (D1 on Cloudflare, SQLite locally).
+ * Resolves to a ready-to-use 503 response when no database is configured.
+ */
+async function resolveDb() {
+  try {
+    return { db: await getDb(), unavailable: null as DbUnavailableError | null };
+  } catch (err) {
+    if (err instanceof DbUnavailableError) return { db: null, unavailable: err };
+    throw err;
+  }
+}
 
 /** GET /api/signals/saved — list the authenticated user's saved signals. */
 export async function GET(req: Request) {
   const user = await getAuthUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { db, unavailable } = await resolveDb();
+  if (!db) return NextResponse.json({ error: unavailable!.message }, { status: 503 });
 
   const saved = await db.savedSignal.findMany({
     where: { userId: user.id },
@@ -21,6 +36,8 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const user = await getAuthUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { db, unavailable } = await resolveDb();
+  if (!db) return NextResponse.json({ error: unavailable!.message }, { status: 503 });
 
   let body: Record<string, unknown>;
   try {
@@ -66,6 +83,8 @@ export async function POST(req: Request) {
 export async function DELETE(req: Request) {
   const user = await getAuthUser(req);
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { db, unavailable } = await resolveDb();
+  if (!db) return NextResponse.json({ error: unavailable!.message }, { status: 503 });
 
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");

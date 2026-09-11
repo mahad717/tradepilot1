@@ -36,6 +36,11 @@ yarn-error.log*
 # vercel
 .vercel
 
+# cloudflare
+/.open-next/
+/.wrangler/
+cloudflare-env.d.ts
+
 
 # typescript
 *.tsbuildinfo
@@ -65,3 +70,4 @@ server.log
 /mini-services/
 /tests/
 /db/*.db
+tool-results/

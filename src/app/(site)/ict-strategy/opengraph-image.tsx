@@ -4,6 +4,10 @@ export const alt = "ICT trading strategy guide — the sweep, MSS and retrace mo
 export const size = OG_SIZE;
 export const contentType = OG_CONTENT_TYPE;
 
+// Render per-request: prerendered image routes are not served by the
+// static-assets incremental cache on Cloudflare Workers.
+export const dynamic = "force-dynamic";
+
 export default createOGImage({
   title: "The ICT trading strategy, explained for humans",
   subtitle:
