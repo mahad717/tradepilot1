@@ -188,3 +188,73 @@ Work Log:
 Stage Summary:
 - Engine v5 turns the four screenshot findings into levers + evidence: costs gated (not just reported), entry placement comparable, targets realistic, OB bottleneck identified (invalidation, not creation). Net results improved on both windows without tuning any return-based parameter — every change is an execution-feasibility or honesty rule.
 - Next candidates: OB invalidation semantics experiment (P2, now measurable), tolerance-default decision (needs user: generous fill assumption), SMT proxy pair.
+
+---
+Task ID: 12
+Agent: Super Z (main agent)
+Task: "Do what's best" — execute the P2 queue from Task 11: OB invalidation
+semantics experiment, SMT proxy pair, min-score gate + tolerance guidance.
+
+Work Log:
+- State check first: P1 (engine v5, 8cd5f73) was already committed/pushed last
+  session — the conversation summary was stale. Proceeded to P2.
+- Probed TwelveData free plan for SMT companions: XAG/USD + all XAU crosses
+  paywalled, DXY invalid symbol; EUR/USD, GBP/USD, USD/EUR, AUD/USD live.
+  Measured XAUUSD↔AUDUSD 15m log-return correlation over 2000 aligned bars:
+  r=0.548, 60.7% directional agreement → AUD/USD adopted as labelled proxy.
+- OB invalidation (P2-1): ObInvalidation type (close-mid|wick-mid|close-distal|
+  wick-distal) in zones.ts with shared obInvalidated(); detectOrderBlocks +
+  buildSeriesContext take the mode; EngineConfig.obInvalidation (default
+  close-mid); compareDimension "obInvalidation" (4 rows); route/UI selects;
+  OB-pipeline panel title shows active rule. Self-test #19: four modes give
+  4 distinct death bars on a hand-built zone (close-mid→4, wick-mid→3,
+  close-distal→5, wick-distal→4).
+- SMT companion (P2-2): getCompanionCandles + SMT_COMPANIONS in market layer
+  (XAUUSD→AUD/USD live; XAGUSD→XAU/USD live canonical-inverted); runBacktest
+  fetches companion at the traded window depth (deep→deep); BacktestResult.smt
+  {companion, source, events, coveragePct, note}; legacy silverSource kept.
+  Failure now returns {error} so the note distinguishes throttling from
+  impossible. XAU/XAG hard-coded strings in confluence traces removed.
+  Live SMT tab (smt.ts) upgraded from SIMULATED silver to live AUD/USD with
+  silver fallback; badge shows the actual companion label.
+- BUGFIX (smtseries): index-pairing (k-th vs k-th swing) silently killed SMT
+  on deep windows — gold 1500 vs AUD 478 swing highs → median pair distance
+  10,189 bars → contemporaneity gate rejected 100% (0 events at 66% coverage).
+  Replaced with time-proximity nearest-swing pairing (≤8 bars, binary search),
+  each series' HH/LH measured against its OWN previous swing. Deep run after
+  fix: 0 → 1096 events at 100% coverage. (The earlier "28 events on 5000b"
+  worked only by luck of similar swing densities.)
+- Coverage honesty: <60% companion coverage appends a hard warning to the SMT
+  note (deep fetch can stop early on the 7-req/min token bucket).
+- Min-score gate (P2-3): tierB select (70 default/75/80) + route param +
+  validation + config echo. Entry-tolerance tooltip now states strict touch is
+  the honest default and points to compare→entry for materiality.
+- validate.ts +2 tests → 20/20 (OB modes; SMT causal stamping — first fixture
+  had equal-high swing bars which kill fractal pivots, rebuilt with strict
+  unique highs).
+- AFTER (XAUUSD 15m balanced, scripts/after-v6-p2.json): 5000b 25t/+1.95R
+  PF1.34 (v5: 24t/+1.92R); deep 10952b 82t/+21.78R PF3.36 (v5: 72t/+17.12R).
+  The deep shift is the SMT +5 optional-confluence bonus finally running on
+  LIVE data — no return-based parameter touched. SMT fired on 2.91% of 5000b
+  candidates (narrow confluence, not a blanket bonus).
+- obInvalidation finding: all four rules IDENTICAL trade sets on 5k + deep
+  windows (Model C=2, D=0; FVG Model B dominates) → the 95% close-through-
+  midpoint invalidation rate is NOT the OB bottleneck; hypothesis closed with
+  evidence, knob kept as a guard for future OB-detector work.
+- Browser smoke: dashboard → Backtesting → new selects (OB invalidation, Min
+  score, compare dim) render; run executes; SMT companion panel renders both
+  LIVE (verified via API: 100% coverage, 1096 events) and unavailable states.
+  TwelveData daily cap burned during verification (812/800) — degradation
+  paths (companion error note, base 502) exercised and honest.
+- Committed 179f8be, pushed (Cloudflare CI deploys).
+
+Stage Summary:
+- Engine v6 ships three P2 items + one real correctness bugfix (SMT pairing).
+- Key insight: OB scarcity is upstream of invalidation (creation/window), and
+  SMT went from decorative (silently absent or simulated) to live-but-labelled
+  proxy confluence — with coverage accounting so partial data can't masquerade
+  as full-window judgment.
+- Next candidates: OB creation-side experiment (displacement factor scan, now
+  that invalidation is ruled out), SMT bonus weighting by measured alignment
+  frequency (only if it proves to over-fire), revisit tolerance default after
+  user decision on generous-fill assumptions.
