@@ -166,3 +166,25 @@ Work Log:
 
 Stage Summary:
 - P1 improvement plan delivered: (1) deep-fetch accounting + shortfall warning (sample instability flipped OOS sign), (2) cost-aware setup gate / configurable cost model, (3) entry-placement experiments (tolerance fill, proximal-edge anchor, expiry sweep) — 84% of losers never see +0.5R, (4) target-ladder realism (TP3 2% hit, 23R median RR), (5) OB creation sub-funnel, (6) banner honesty re negative OOS, (7) suppress no-smt loser-attribution when SMT N/A, (8) ambiguity affected-trades context.
+
+---
+Task ID: 11
+Agent: Super Z (main agent)
+Task: "Improve against these findings" — implement the P1/P2 improvement plan from the Task-10 screenshot audit (engine v5).
+
+Work Log:
+- types/sequence/targets/execution/diagnostics/backtest/route/backtest-tab all extended; 18/18 self-tests, tsc + eslint clean on touched files.
+- Fetch accounting (P1-1): BacktestResult.fetch + DataQuality.requestedBars/rawFetched/fetchRequests/fetchShortfallPct; deep windows with >10% shortfall append a WARNING to the audit note; UI "Raw fetched / req" card + amber shortfall banner. Today's deep run received 15000/15000 (3 chunks, cached) — the earlier 7289-bar episode is now impossible to miss.
+- Execution-cost gate (P1-2): cfg.maxCostPctOfR (default 0.35, UI select off/25/35/50) rejects setups at stage 5b with EXCESSIVE_COST (STAGE_DEPTH 9) + funnel row "Execution cost within gate". 5000b: 16 setups rejected.
+- Entry placement (P1-3): cfg.entryAnchor edge|midpoint (UI select), cfg.entryToleranceR 0/0.05/0.1 (last-look fills; trade.toleranceFill + orderFlow.toleranceFills surfaced). compareDim=entry on 5000b: edge strict 24t +1.92R; edge+0.05R 26t 73.1% WR +5.02R; midpoint 19t -0.08R (location matters more than fills).
+- Target realism (P1-4): selectTradeTargets horizon cap (cfg.targetHorizonR default 8R; route param horizon); rrDiagnostics.medianTp1Rr/medianTp3Rr/targetsCapped; TradeRecord.barsToTp1/2/3 + management medians. 5000b: median TP1 = 0.3R (!), TP3 6.3R, 2799 far levels capped, TP3 median 44 bars.
+- OB pipeline (P1-5): series-wide zonesCreated/invalidated + per-candidate skip counters + note; UI panel. 5000b verdict: 180 created, 171 invalidated by close-through-midpoint (95%), 330 window-seen, 146 skip-mitigated, 20 candidates w/ OB, 3 Model C valid → close-through-midpoint invalidation is THE bottleneck (diagnosis only, no definition change).
+- Honesty (P2): robustnessFlags green requires oos.netR >= 0 (OOS negative = max YELLOW + explicit bullet); bestPeriodShare 60–80% now explains the YELLOW ("66% of net gain from a single period"); no-smt loser tag only when SMT live; score bucket 60–69 (C) added.
+- compareDimension(dimension) engine + API compareDim param + UI dimension select (strictness/expiry/sessions/entry). 5000b: expiry 6/12/24 → 18/24/27 trades net 2.58/1.92/2.43R (plateau confirmed); sessions KZ-only 17t +4.13R vs all 24t +1.92R.
+- BEFORE/AFTER (XAUUSD 15m, balanced, same windows): 5000b 23t/+1.03R/PF1.14/DD3.65 → 24t/+1.92R/PF1.33/DD2.21; deep15000 69t/+12.63R/PF2.0/DD3.64 → 72t/+17.12R/PF2.87/DD2.26 (OOS +5.15→+2.99R, still positive; flags YELLOW explained by 66% single-period concentration).
+- Browser smoke test: dashboard → Backtesting → new selects render → 5000-bar run → OB pipeline/fetch/RR-medians/bars-to-TP/tolerance panels all render with live data.
+- Committed 8cd5f73, pushed (Cloudflare CI deploys).
+
+Stage Summary:
+- Engine v5 turns the four screenshot findings into levers + evidence: costs gated (not just reported), entry placement comparable, targets realistic, OB bottleneck identified (invalidation, not creation). Net results improved on both windows without tuning any return-based parameter — every change is an execution-feasibility or honesty rule.
+- Next candidates: OB invalidation semantics experiment (P2, now measurable), tolerance-default decision (needs user: generous fill assumption), SMT proxy pair.
