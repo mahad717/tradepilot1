@@ -318,3 +318,65 @@ Stage Summary:
   should be re-weighted, not from silent tuning.
 - Known deployment fragility: compare=1 requests at 5000 bars can still hit
   Worker CPU limits (5 runs per request); single runs are fine.
+
+---
+Task ID: 14
+Agent: Super Z (main agent)
+Task: "Increase the win rate without reducing the trade count" — engine v8:
+BE+ breakeven mode, entry-tolerance default, plus a deep-window 1102 rescue.
+
+Work Log:
+- WR levers chosen by constraint: NO selection tightening (that reduces
+  count). Levers = fill mechanics + exit management.
+- BE+ (tp1cost): new BreakevenMode — after TP1 the stop moves to entry +
+  round-trip-cost buffer sized on the REMAINING shares (worst case after
+  TP1 = small net win instead of a cost-dragged scratch; win = netR>0, so
+  cost-dragged TP1 retraces currently count as losses). validate #24 pins
+  exact accounting (stop 101.44, net +0.75R vs +0.39R plain BE).
+- compareDimension "be": tp1 / tp1cost / risk1@0.5 / structural — BE never
+  changes fills, so WR deltas are pure management. UI select + route param.
+- entryToleranceR default 0 -> 0.05 (v5 evidence + re-confirmed).
+- Evidence (XAUUSD 15m, same-day windows): 5000b BE-compare (30t ALL rows):
+  plain 70.0% WR +0.130R vs BE+ 76.7% WR −0.010R vs risk1@0.5 46.7% +0.140R.
+  7000b A/B/C (same fetch): 60t/56.7%/+11.26R -> tol 66t/59.1%/+11.97R ->
+  BE+ 69t/72.5%/+9.55R. BE+ = biggest WR lever (+6.7..+13.4pts) at a small
+  expectancy cost (caps TP2/TP3 runners) — left OFF by default, kept as the
+  headline-WR option with costs measurable in compare. Tolerance default
+  adopted (+WR AND +net, count up).
+- DEEP-WINDOW 1102 RESCUE (prod regression found mid-task): deep runs
+  (>=8000 bars) died with CF 1102; v7-identical params reproduced it (v8
+  exonerated). Systematic bisection via route debug stages (fetch/smt/core,
+  phase stop-early, trim/smt-off flags): buildSeriesContext 0ms, the SCAN
+  loop and the RESPONSE PAYLOAD were the killers. workerd gotchas found:
+  Date.now()/performance.now() frozen during CPU (timings lie — use op
+  counts/early returns instead); Intl.formatToParts per bar per window
+  (~27k calls) vs Node-µs costs.
+- Fixes: (1) priceTrees built ONCE per run, Float64Array rows; (2) O(1) SMT
+  prefix lookups; (3) sessions.ts rule-based offsets (EU/US transition rules
+  are UTC-defined; Intl removed from the per-bar path — was ~27k calls),
+  local weekday from LOCAL day number (per-UTC-day memo dow was wrong across
+  midnight shifts); (4) setup-scan event queries O(n)->O(log n):
+  structureBull/structureBear + poolsByPrice in SeriesContext,
+  structFind/sweepFindNewest/poolNearPrice replace full-array finds — the
+  dominant rejection path had scanned the ENTIRE history per bar per model;
+  (5) compact=1 deep responses (strip audit/confluence prose/samples —
+  proven: same run, 30KB payload 200 OK vs 830KB 1102) + tradeDetail=<id>
+  on-demand + UI auto-retry; (6) deepCache LRU-bounded.
+- Selftest #25 rewritten twice: first as 3512 Intl probes (pushed the
+  SELFTEST route over the same ceiling in prod!), then as rule-asserted
+  transitions + 24 Intl spot-probes. 25/25 local + prod.
+- FINAL (prod, deep 15000 compact, tol 0.05): 99t WR 61.6% exp +0.180R net
+  +18.10R PF 2.43 DD 3.30R, SMT AUD/USD live 1090 ev @100%; BE+ variant
+  71.2% WR / +0.16R exp / +9.55R net. v7 baseline was 90t/61.1%/+19.96R.
+
+Stage Summary:
+- Win rate up WITHOUT count reduction, two ways: adopted tolerance default
+  (+fills, +WR, +net) and shipped BE+ as the on-demand WR-max lever
+  (+6.7–13.4pts, count never reduced, small expectancy cost, now measurable
+  in compare→be). Defaults stay honest (plain BE) because BE+ flips net
+  negative on some windows.
+- Deep windows un-blocked with a 6-commit bisection; residual flakiness at
+  the margin handled by UI retry. Debug scaffolding (stage/phase/trim/
+  tradeDetail params) left in place, undocumented in the UI.
+- Known fragility: deep full-payload responses (full=detail mode) still
+  exceed the Worker ceiling by design — the UI uses compact automatically.
