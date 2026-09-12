@@ -163,7 +163,11 @@ const MODEL_ORDER: ModelKey[] = ["A_SWEEP_REVERSAL", "B_FVG_CONTINUATION", "C_OB
 export const DEFAULT_CONFIG: EngineConfig = {
   maxSweepAgeBars: 8,
   maxStructureAgeBars: 14,
-  orderExpiryBars: 12,
+  // 24 bars: sweep-verified on XAUUSD 15m (480k candles, 25k window) — 79
+  // trades @ 75.9% WR / +11.09R net vs 12-bar's 71 @ 74.6% / +7.31R, same
+  // 0.46R maxDD, OOS +2.36R, 5/5 periods positive. Longer validity only
+  // helps when fills arrive late AND still win — re-verify per symbol.
+  orderExpiryBars: 24,
 
   sweepQualityMin: 0.35,
   allowUnconfirmedSweep: true,

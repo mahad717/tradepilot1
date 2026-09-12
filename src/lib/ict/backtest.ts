@@ -235,8 +235,8 @@ export async function compareDimension(
   if (dimension === "expiry") {
     const rows = await Promise.all([
       run("6-bar expiry", "pending limits live 6 bars", { orderExpiryBars: 6 }),
-      run("12-bar expiry", "pending limits live 12 bars (current default)", { orderExpiryBars: 12 }),
-      run("24-bar expiry", "pending limits live 24 bars", { orderExpiryBars: 24 }),
+      run("12-bar expiry", "pending limits live 12 bars (previous default)", { orderExpiryBars: 12 }),
+      run("24-bar expiry", "pending limits live 24 bars — verified best on XAU 15m (current default)", { orderExpiryBars: 24 }),
     ]);
     return { dimension, rows };
   }

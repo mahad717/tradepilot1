@@ -75,6 +75,7 @@ export function parseBacktestParams(
   const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0.05");
   const costGateParam = Number(searchParams.get("costGate") ?? "0.35");
   const horizonParam = Number(searchParams.get("horizon") ?? "8");
+  const expiryParam = Number(searchParams.get("expiry") ?? "24");
   const obInvalidationParam = searchParams.get("obInvalidation") ?? "close-mid";
   const obDispParam = Number(searchParams.get("obDisp") ?? "1.2");
   const tierBParam = Number(searchParams.get("tierB") ?? "70");
@@ -137,6 +138,9 @@ export function parseBacktestParams(
   if (!Number.isFinite(horizonParam) || horizonParam < 0 || horizonParam > 50) {
     return { ok: false, error: "horizon must be between 0 (off) and 50" };
   }
+  if (!Number.isFinite(expiryParam) || expiryParam < 1 || expiryParam > 50) {
+    return { ok: false, error: "expiry must be between 1 and 50 bars" };
+  }
 
   const sessions = sessionsParam
     .split(",")
@@ -159,6 +163,7 @@ export function parseBacktestParams(
       obInvalidation: obInvalidationParam as never,
       obDisplacementFactor: obDispParam,
       tierB: tierBParam,
+      orderExpiryBars: expiryParam,
       ...over,
     };
     if (spreadParam !== null || slipParam !== null || commBpParam !== null) {

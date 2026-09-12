@@ -857,8 +857,8 @@ export function dimensionPlan(dim: Exclude<CompareDimension, "strictness">): { l
   if (dim === "expiry") {
     return [
       { label: "6-bar expiry", description: "pending limits live 6 bars", over: { orderExpiryBars: 6 } },
-      { label: "12-bar expiry", description: "pending limits live 12 bars (current default)", over: { orderExpiryBars: 12 } },
-      { label: "24-bar expiry", description: "pending limits live 24 bars", over: { orderExpiryBars: 24 } },
+      { label: "12-bar expiry", description: "pending limits live 12 bars (previous default)", over: { orderExpiryBars: 12 } },
+      { label: "24-bar expiry", description: "pending limits live 24 bars — verified best on XAU 15m (current default)", over: { orderExpiryBars: 24 } },
     ];
   }
   if (dim === "sessions") {

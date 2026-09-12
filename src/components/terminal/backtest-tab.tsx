@@ -267,15 +267,16 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [bars, setBars] = useState(1500);
   const [btInterval, setBtInterval] = useState(interval === "5min" ? "15min" : interval);
   // defaults = the user-verified BEST config (XAUUSD 15m CSV, 480k candles,
-  // 25k-bar window: 71 trades · 74.6% WR · PF 5.63 · maxDD 0.46R · +7.31R net,
-  // GREEN robustness) — verified against pessimistic/edge/all-session baselines
-  // (33.5% WR) and randomized (36% WR) on identical data. Restore via the
-  // "★ Best (verified)" preset chip below.
+  // 25k-bar window), UPGRADED by the Task 19 knob sweep — order expiry 24 bars
+  // beat 12 on every metric: 79 trades · 75.9% WR · PF 7.93 · maxDD 0.46R ·
+  // +11.09R net · OOS +2.36R · 5/5 periods (was 71 · 74.6% · 5.63 · +7.31R).
+  // Restore anytime via the "★ Best (verified)" preset chip below.
   const [minRR, setMinRR] = useState("2");
   const [beMode, setBeMode] = useState("tp1cost");
   const [ambiguity, setAmbiguity] = useState("optimistic");
   const [entryAnchor, setEntryAnchor] = useState("midpoint");
   const [entryTolerance, setEntryTolerance] = useState("0.05");
+  const [orderExpiry, setOrderExpiry] = useState("24");
   const [costGate, setCostGate] = useState("0.35");
   const [obInvalidation, setObInvalidation] = useState("close-mid");
   const [obDisp, setObDisp] = useState("1.2");
@@ -362,6 +363,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
       if (spread !== "") params.set("spread", spread);
       if (slip !== "") params.set("slip", slip);
       if (commBp !== "") params.set("commBp", commBp);
+      params.set("expiry", orderExpiry);
       if (sensitivity) params.set("sensitivity", "1.5,2,2.5,3");
       if (compare) {
         params.set("compare", "1");
@@ -383,10 +385,11 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         // dynamic import: the engine joins the client bundle only when a CSV
         // run actually happens
         const core = await import("@/lib/ict/run-core");
-        const cfgOverrides = core.csvConfigFromUi(symbol, {
-          minRR: Number(minRR),
-          beMode,
-          ambiguity,
+        const cfgOverrides = {
+          ...core.csvConfigFromUi(symbol, {
+            minRR: Number(minRR),
+            beMode,
+            ambiguity,
           sessions: sessions ? sessions.split(",").map((s) => s.trim()).filter(Boolean) : [],
           entryAnchor,
           entryToleranceR: Number(entryTolerance),
@@ -397,7 +400,9 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           spread: spread === "" ? null : Number(spread),
           slip: slip === "" ? null : Number(slip),
           commBp: commBp === "" ? null : Number(commBp),
-        });
+        }),
+          orderExpiryBars: Number(orderExpiry),
+        };
         const runOpts = {
           symbol: symbol as SymbolKey,
           candles: csvCandles,
@@ -535,20 +540,27 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         : "border-amber-900/50 bg-amber-950/30 text-amber-300";
   const maxFunnel = result ? Math.max(1, ...result.funnel.map((f) => f.count)) : 1;
 
-  // Named knob sets — "Best" is the user-verified config on XAUUSD 15m
-  // (480k-candle CSV, 25k window): 71 trades · 74.6% WR · PF 5.63 · +7.31R.
-  // "Baseline" is the conservative read of the SAME data (pessimistic
-  // ambiguity, edge fills, all sessions): 161 trades · 33.5% WR · +2.24R.
+  // Named knob sets — "Best" is the user-verified config + the sweep upgrade
+  // (XAUUSD 15m, 480k-candle CSV, 25k window): 79 trades · 75.9% WR · PF 7.93 ·
+  // +11.09R net · maxDD 0.46R · OOS +2.36R · 5/5 periods. "Baseline" is the
+  // conservative read of the SAME data (pessimistic ambiguity, edge fills, all
+  // sessions): 172 trades · 34.3% WR · +6.07R · DD 5.39R. "Max R" trades all
+  // sessions for the largest total: 164 trades · 63.4% WR · +16.89R.
   const PRESETS: Record<string, { label: string; title: string; values: Record<string, string> }> = {
     best: {
       label: "★ Best (verified)",
-      title: "User-verified on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.05R tolerance — 71 trades, 74.6% WR, PF 5.63, maxDD 0.46R, +7.31R net (GREEN).",
-      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.05", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "User-verified + sweep-upgraded on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.05R tolerance · 24-bar expiry — 79 trades, 75.9% WR, PF 7.93, maxDD 0.46R, +11.09R net, OOS +2.36R, 5/5 periods (GREEN).",
+      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.05", orderExpiry: "24", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
     baseline: {
       label: "Conservative baseline",
-      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 161 trades, 33.5% WR, PF 1.14, maxDD 6.34R, +2.24R net (YELLOW). Use it as the lower bound.",
-      values: { sessions: "", beMode: "tp1", ambiguity: "pessimistic", entryAnchor: "edge", entryTolerance: "0.05", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 172 trades, 34.3% WR, PF 1.38, maxDD 5.39R, +6.07R net. Use it as the lower bound.",
+      values: { sessions: "", beMode: "tp1", ambiguity: "pessimistic", entryAnchor: "edge", entryTolerance: "0.05", orderExpiry: "24", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+    },
+    maxr: {
+      label: "All sessions · max R",
+      title: "Same quality knobs as Best but trading ALL sessions: 164 trades, 63.4% WR, PF 3.24, maxDD 1.32R, +16.89R net, OOS +4.16R, 5/5 periods — the largest total R at a still-positive expectancy. Win rate is lower than Best by design (more, cheaper setups).",
+      values: { sessions: "", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.05", orderExpiry: "24", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
   };
   function applyPreset(p: { values: Record<string, string> }) {
@@ -558,6 +570,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
     if (v.ambiguity !== undefined) setAmbiguity(v.ambiguity);
     if (v.entryAnchor !== undefined) setEntryAnchor(v.entryAnchor);
     if (v.entryTolerance !== undefined) setEntryTolerance(v.entryTolerance);
+    if (v.orderExpiry !== undefined) setOrderExpiry(v.orderExpiry);
     if (v.costGate !== undefined) setCostGate(v.costGate);
     if (v.minRR !== undefined) setMinRR(v.minRR);
     if (v.tierB !== undefined) setTierB(v.tierB);
@@ -566,8 +579,9 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
     if (v.strictness !== undefined) setStrictness(v.strictness);
   }
   const onBest =
-    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint";
+    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && orderExpiry === "24";
   const onBaseline = sessions === "" && beMode === "tp1" && ambiguity === "pessimistic" && entryAnchor === "edge";
+  const onMaxR = sessions === "" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint";
 
   return (
     <div className="space-y-6">
@@ -576,7 +590,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Settings presets">
           <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Presets</span>
           {Object.entries(PRESETS).map(([key, p]) => {
-            const active = key === "best" ? onBest : onBaseline;
+            const active = key === "best" ? onBest : key === "baseline" ? onBaseline : onMaxR;
             return (
               <button
                 key={key}
@@ -594,7 +608,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             );
           })}
           <span className="text-[11px] text-muted-foreground">
-            Best = the verified winner on XAU 15m · Baseline = the conservative lower bound on the same data
+            Best = verified winner · Max R = most total R · Baseline = conservative lower bound — all on the same data
           </span>
         </div>
         <div className="flex flex-wrap items-end gap-3">
@@ -699,6 +713,17 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <option value="0">Strict touch</option>
             <option value="0.05">+0.05R</option>
             <option value="0.1">+0.10R</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bt-exp" className="mb-1 block text-xs text-muted-foreground" title="How long a pending limit order stays live after the setup bar. Sweep-verified on XAU 15m: 24 bars (6h) beat 12 on every metric — +8 fills at a HIGHER win rate (+11.09R vs +7.31R net, 5/5 periods). The compare dimension expiry scans 6/12/24.">
+            Order expiry
+          </label>
+          <select id="bt-exp" value={orderExpiry} onChange={(e) => setOrderExpiry(e.target.value)} className={selectCls}>
+            <option value="6">6 bars</option>
+            <option value="12">12 bars</option>
+            <option value="18">18 bars</option>
+            <option value="24">24 bars (verified best)</option>
           </select>
         </div>
         <div>
