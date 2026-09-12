@@ -1,0 +1,190 @@
+{
+  "phase2": [
+    {
+      "name": "E30+P40",
+      "trades": 82,
+      "wr": 78,
+      "net": 15.95,
+      "pf": 11.49,
+      "dd": 0.22
+    },
+    {
+      "name": "E30+H12",
+      "trades": 82,
+      "wr": 76.8,
+      "net": 14.85,
+      "pf": 10.58,
+      "dd": 0.28
+    },
+    {
+      "name": "E30+T15",
+      "trades": 91,
+      "wr": 76.9,
+      "net": 14.46,
+      "pf": 11.33,
+      "dd": 0.31
+    },
+    {
+      "name": "E30+MH48",
+      "trades": 82,
+      "wr": 76.8,
+      "net": 14.28,
+      "pf": 10.21,
+      "dd": 0.28
+    },
+    {
+      "name": "E30+P40+H12",
+      "trades": 82,
+      "wr": 78,
+      "net": 19.79,
+      "pf": 14.02,
+      "dd": 0.22
+    },
+    {
+      "name": "E30+P40+T15",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 16.86,
+      "pf": 14.38,
+      "dd": 0.26
+    },
+    {
+      "name": "E30+P40+MH48",
+      "trades": 82,
+      "wr": 78,
+      "net": 16.48,
+      "pf": 11.84,
+      "dd": 0.22
+    },
+    {
+      "name": "E30+P40+H12+MH48",
+      "trades": 82,
+      "wr": 78,
+      "net": 17.61,
+      "pf": 12.59,
+      "dd": 0.22
+    },
+    {
+      "name": "E30+P40+T15+H12",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "E36+P40",
+      "trades": 83,
+      "wr": 77.1,
+      "net": 15.86,
+      "pf": 11.43,
+      "dd": 0.22
+    },
+    {
+      "name": "P40+H12",
+      "trades": 79,
+      "wr": 77.2,
+      "net": 16.62,
+      "pf": 11.59,
+      "dd": 0.39
+    },
+    {
+      "name": "P40+T15",
+      "trades": 88,
+      "wr": 78.4,
+      "net": 13.81,
+      "pf": 11.54,
+      "dd": 0.27
+    },
+    {
+      "name": "P40+H12+T15",
+      "trades": 88,
+      "wr": 78.4,
+      "net": 17.65,
+      "pf": 14.47,
+      "dd": 0.27
+    },
+    {
+      "name": "H12+T15",
+      "trades": 88,
+      "wr": 76.1,
+      "net": 12.83,
+      "pf": 9.79,
+      "dd": 0.36
+    },
+    {
+      "name": "P40+MS035",
+      "trades": 80,
+      "wr": 77.5,
+      "net": 12.88,
+      "pf": 9.2,
+      "dd": 0.39
+    },
+    {
+      "name": "GRAND E30+P40+H12+T15+MH48",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 17.99,
+      "pf": 15.28,
+      "dd": 0.26
+    }
+  ],
+  "champion": {
+    "name": "E30+P40+T15+H12",
+    "over": {
+      "orderExpiryBars": 30,
+      "partialShares": [
+        0.4,
+        0.3,
+        0.3
+      ],
+      "entryToleranceR": 0.15,
+      "targetHorizonR": 12
+    },
+    "W1": {
+      "name": "E30+P40+T15+H12",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    "W2": {
+      "baseline": {
+        "name": "W2 baseline",
+        "trades": 53,
+        "wr": 35.8,
+        "net": 0.42,
+        "pf": 1.09,
+        "dd": 2.92
+      },
+      "champion": {
+        "name": "W2 champion",
+        "trades": 66,
+        "wr": 40.9,
+        "net": 3.1,
+        "pf": 1.86,
+        "dd": 1.73
+      }
+    },
+    "W3": {
+      "baseline": {
+        "name": "W3 baseline",
+        "trades": 73,
+        "wr": 32.9,
+        "net": -3.11,
+        "pf": 0.52,
+        "dd": 4
+      },
+      "champion": {
+        "name": "W3 champion",
+        "trades": 90,
+        "wr": 47.8,
+        "net": 1.82,
+        "pf": 1.3,
+        "dd": 1.8
+      }
+    },
+    "verdict": "SHIP"
+  }
+}

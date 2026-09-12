@@ -234,9 +234,9 @@ export async function compareDimension(
 
   if (dimension === "expiry") {
     const rows = await Promise.all([
-      run("6-bar expiry", "pending limits live 6 bars", { orderExpiryBars: 6 }),
-      run("12-bar expiry", "pending limits live 12 bars (previous default)", { orderExpiryBars: 12 }),
-      run("24-bar expiry", "pending limits live 24 bars — verified best on XAU 15m (current default)", { orderExpiryBars: 24 }),
+      run("12-bar expiry", "pending limits live 12 bars (pre-sweep default)", { orderExpiryBars: 12 }),
+      run("24-bar expiry", "pending limits live 24 bars — round-1 sweep winner", { orderExpiryBars: 24 }),
+      run("30-bar expiry", "pending limits live 30 bars — round-2 verified best (current default)", { orderExpiryBars: 30 }),
     ]);
     return { dimension, rows };
   }
@@ -250,9 +250,9 @@ export async function compareDimension(
   if (dimension === "entry") {
     const rows = await Promise.all([
       run("Edge + strict", "limit at the proximal edge, no tolerance (honest-touch baseline)", { entryAnchor: "edge", entryToleranceR: 0 }),
-      run("Edge + 0.05R tolerance", "marketable last-look within 0.05R of the edge limit", { entryAnchor: "edge", entryToleranceR: 0.05 }),
+      run("Edge + 0.15R tolerance", "marketable last-look within 0.15R of the edge limit", { entryAnchor: "edge", entryToleranceR: 0.15 }),
       run("Midpoint + strict", "limit at the zone midpoint — deeper fill, worse location", { entryAnchor: "midpoint", entryToleranceR: 0 }),
-      run("Midpoint + 0.05R tolerance", "marketable last-look around the midpoint limit (verified best on XAU 15m)", { entryAnchor: "midpoint", entryToleranceR: 0.05 }),
+      run("Midpoint + 0.15R tolerance", "marketable last-look around the midpoint limit (verified best on XAU 15m)", { entryAnchor: "midpoint", entryToleranceR: 0.15 }),
     ]);
     return { dimension, rows };
   }

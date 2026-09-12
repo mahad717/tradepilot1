@@ -163,11 +163,13 @@ const MODEL_ORDER: ModelKey[] = ["A_SWEEP_REVERSAL", "B_FVG_CONTINUATION", "C_OB
 export const DEFAULT_CONFIG: EngineConfig = {
   maxSweepAgeBars: 8,
   maxStructureAgeBars: 14,
-  // 24 bars: sweep-verified on XAUUSD 15m (480k candles, 25k window) — 79
-  // trades @ 75.9% WR / +11.09R net vs 12-bar's 71 @ 74.6% / +7.31R, same
-  // 0.46R maxDD, OOS +2.36R, 5/5 periods positive. Longer validity only
-  // helps when fills arrive late AND still win — re-verify per symbol.
-  orderExpiryBars: 24,
+  // 30 bars: round-2 sweep-verified on XAUUSD 15m (480k candles, 25k window)
+  // — part of the E30+P40+T15+H12 champion: 91 trades @ 80.2% WR / +20.70R net
+  // / PF 17.43 / maxDD 0.26R, and it IMPROVES both unseen walk-forward windows
+  // (W2 +3.10R vs +0.42R, W3 +1.82R vs −3.11R). Round 1 shipped 24; round 2
+  // found 30 still adds late fills that win. Longer validity only helps when
+  // fills arrive late AND still win — re-verify per symbol.
+  orderExpiryBars: 30,
 
   sweepQualityMin: 0.35,
   allowUnconfirmedSweep: true,
@@ -200,7 +202,11 @@ export const DEFAULT_CONFIG: EngineConfig = {
 
   beMode: "tp1",
   beTriggerR: 1.0,
-  partialShares: [0.5, 0.25, 0.25],
+  // 40/30/30: round-2 sweep winner (with expiry 30 + tolerance 0.15 + horizon
+  // 12). Taking less off at TP1 leaves more on the runners: WR rose to 80.2%
+  // AND net nearly doubled (+20.70R vs +11.09R at 50/25/25) — the TP2/TP3
+  // legs carry the edge, so the ladder was the bottleneck, not the entries.
+  partialShares: [0.4, 0.3, 0.3],
   maxHoldBars: 96,
 
   ambiguity: "pessimistic",
@@ -212,13 +218,19 @@ export const DEFAULT_CONFIG: EngineConfig = {
   // setups where costs would eat more than 35% of the risked R.
   maxCostPctOfR: 0.35,
   entryAnchor: "edge",
-  // 0.05R marketable last-look: a candle approaching within 0.05R of the edge
-  // limit fills. Evidence (5000-bar entry compare, engine v5): edge+0.05R →
-  // 26 trades @ 73.1% WR vs edge strict 24 — more fills AND more winners;
-  // every tolerance fill is counted (orderFlow.toleranceFills) and flagged on
-  // the trade (trade.toleranceFill); compare → entry quantifies the assumption.
-  entryToleranceR: 0.05,
-  targetHorizonR: 8,
+  // 0.15R marketable last-look: a candle approaching within 0.15R of the edge
+  // limit fills. Round-2 sweep (Task 20): 0.15 beats 0.05 on the real XAU 15m
+  // file at MORE trades (88-91 vs 79) AND higher WR — the extra fills are
+  // near-miss winners, not junk. Every tolerance fill is counted
+  // (orderFlow.toleranceFills) and flagged on the trade (trade.toleranceFill);
+  // compare → entry quantifies the assumption; walk-forward W2/W3 confirm it
+  // generalizes beyond the selection window.
+  entryToleranceR: 0.15,
+  // 12R: execution-ladder reach — structural targets farther than this are
+  // ignored when building TP2/TP3. Round-2 sweep: 12R beats 8R (+12.09R vs
+  // +11.09R alone; part of the champion combo). Wider reach only matters when
+  // the ladder keeps 30%+ on the runners (see partialShares above).
+  targetHorizonR: 12,
   obInvalidation: "close-mid",
   obDisplacementFactor: 1.2,
 

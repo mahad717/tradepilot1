@@ -267,16 +267,18 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [bars, setBars] = useState(1500);
   const [btInterval, setBtInterval] = useState(interval === "5min" ? "15min" : interval);
   // defaults = the user-verified BEST config (XAUUSD 15m CSV, 480k candles,
-  // 25k-bar window), UPGRADED by the Task 19 knob sweep — order expiry 24 bars
-  // beat 12 on every metric: 79 trades · 75.9% WR · PF 7.93 · maxDD 0.46R ·
-  // +11.09R net · OOS +2.36R · 5/5 periods (was 71 · 74.6% · 5.63 · +7.31R).
+  // 25k-bar window), UPGRADED by the round-2 walk-forward sweep (Task 20) —
+  // expiry 30 · tolerance 0.15R (engine: partials 40/30/30 · horizon 12R):
+  // 91 trades · 80.2% WR · PF 17.43 · maxDD 0.26R · +20.70R net · OOS +9.03R ·
+  // 5/5 periods GREEN, and BOTH unseen windows improve too (W2 +3.10R vs
+  // +0.42R, W3 +1.82R vs −3.11R) — generalization, not tail-window fitting.
   // Restore anytime via the "★ Best (verified)" preset chip below.
   const [minRR, setMinRR] = useState("2");
   const [beMode, setBeMode] = useState("tp1cost");
   const [ambiguity, setAmbiguity] = useState("optimistic");
   const [entryAnchor, setEntryAnchor] = useState("midpoint");
-  const [entryTolerance, setEntryTolerance] = useState("0.05");
-  const [orderExpiry, setOrderExpiry] = useState("24");
+  const [entryTolerance, setEntryTolerance] = useState("0.15");
+  const [orderExpiry, setOrderExpiry] = useState("30");
   const [costGate, setCostGate] = useState("0.35");
   const [obInvalidation, setObInvalidation] = useState("close-mid");
   const [obDisp, setObDisp] = useState("1.2");
@@ -540,27 +542,28 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         : "border-amber-900/50 bg-amber-950/30 text-amber-300";
   const maxFunnel = result ? Math.max(1, ...result.funnel.map((f) => f.count)) : 1;
 
-  // Named knob sets — "Best" is the user-verified config + the sweep upgrade
-  // (XAUUSD 15m, 480k-candle CSV, 25k window): 79 trades · 75.9% WR · PF 7.93 ·
-  // +11.09R net · maxDD 0.46R · OOS +2.36R · 5/5 periods. "Baseline" is the
-  // conservative read of the SAME data (pessimistic ambiguity, edge fills, all
-  // sessions): 172 trades · 34.3% WR · +6.07R · DD 5.39R. "Max R" trades all
-  // sessions for the largest total: 164 trades · 63.4% WR · +16.89R.
+  // Named knob sets — "Best" is the user-verified config + the round-2
+  // walk-forward sweep upgrade (XAUUSD 15m, 480k-candle CSV, 25k window):
+  // 91 trades · 80.2% WR · PF 17.43 · +20.70R net · maxDD 0.26R · OOS +9.03R ·
+  // 5/5 periods. "Baseline" is the conservative read of the SAME data
+  // (pessimistic ambiguity, edge fills, all sessions): 172 trades · 36.0% WR ·
+  // +7.86R · DD 5.11R. "Max R" trades all sessions for the largest total:
+  // 194 trades · 71.6% WR · +31.23R.
   const PRESETS: Record<string, { label: string; title: string; values: Record<string, string> }> = {
     best: {
       label: "★ Best (verified)",
-      title: "User-verified + sweep-upgraded on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.05R tolerance · 24-bar expiry — 79 trades, 75.9% WR, PF 7.93, maxDD 0.46R, +11.09R net, OOS +2.36R, 5/5 periods (GREEN).",
-      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.05", orderExpiry: "24", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "User-verified + walk-forward-sweep on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.15R tolerance · 30-bar expiry — 91 trades, 80.2% WR, PF 17.43, maxDD 0.26R, +20.70R net, OOS +9.03R, 5/5 periods (GREEN). Both unseen windows improve too (+3.10R / +1.82R) — generalizes beyond the fitted window. Pessimistic read: 78.0% / +19.71R.",
+      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.15", orderExpiry: "30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
     baseline: {
       label: "Conservative baseline",
-      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 172 trades, 34.3% WR, PF 1.38, maxDD 5.39R, +6.07R net. Use it as the lower bound.",
+      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 172 trades, 36.0% WR, PF 1.49, maxDD 5.11R, +7.86R net. Use it as the lower bound.",
       values: { sessions: "", beMode: "tp1", ambiguity: "pessimistic", entryAnchor: "edge", entryTolerance: "0.05", orderExpiry: "24", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
     maxr: {
       label: "All sessions · max R",
-      title: "Same quality knobs as Best but trading ALL sessions: 164 trades, 63.4% WR, PF 3.24, maxDD 1.32R, +16.89R net, OOS +4.16R, 5/5 periods — the largest total R at a still-positive expectancy. Win rate is lower than Best by design (more, cheaper setups).",
-      values: { sessions: "", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.05", orderExpiry: "24", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "Same quality knobs as Best but trading ALL sessions: 194 trades, 71.6% WR, PF 5.68, maxDD 1.30R, +31.23R net, OOS +12.43R, 5/5 periods — the largest total R at a still-positive expectancy. Win rate is lower than Best by design (more, cheaper setups).",
+      values: { sessions: "", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.15", orderExpiry: "30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
   };
   function applyPreset(p: { values: Record<string, string> }) {
@@ -579,7 +582,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
     if (v.strictness !== undefined) setStrictness(v.strictness);
   }
   const onBest =
-    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && orderExpiry === "24";
+    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && orderExpiry === "30";
   const onBaseline = sessions === "" && beMode === "tp1" && ambiguity === "pessimistic" && entryAnchor === "edge";
   const onMaxR = sessions === "" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint";
 
@@ -708,22 +711,24 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </select>
         </div>
         <div>
-          <label htmlFor="bt-tol" className="mb-1 block text-xs text-muted-foreground" title="Marketable last-look: fill when price comes within this many R of the limit without touching it. Default 0.05R — earlier fills; every tolerance fill is counted (Tolerance fills card) and flagged on the trade. Set 0 for strict touch. Compare → Entry placement quantifies the assumption.">Entry tolerance</label>
+          <label htmlFor="bt-tol" className="mb-1 block text-xs text-muted-foreground" title="Marketable last-look: fill when price comes within this many R of the limit without touching it. Default 0.15R — walk-forward sweep on XAU 15m: more fills (91 vs 79) at a HIGHER win rate; every tolerance fill is counted (Tolerance fills card) and flagged on the trade. Set 0 for strict touch. Compare → Entry placement quantifies the assumption.">Entry tolerance</label>
           <select id="bt-tol" value={entryTolerance} onChange={(e) => setEntryTolerance(e.target.value)} className={selectCls}>
             <option value="0">Strict touch</option>
             <option value="0.05">+0.05R</option>
             <option value="0.1">+0.10R</option>
+            <option value="0.15">+0.15R (verified best)</option>
           </select>
         </div>
         <div>
-          <label htmlFor="bt-exp" className="mb-1 block text-xs text-muted-foreground" title="How long a pending limit order stays live after the setup bar. Sweep-verified on XAU 15m: 24 bars (6h) beat 12 on every metric — +8 fills at a HIGHER win rate (+11.09R vs +7.31R net, 5/5 periods). The compare dimension expiry scans 6/12/24.">
+          <label htmlFor="bt-exp" className="mb-1 block text-xs text-muted-foreground" title="How long a pending limit order stays live after the setup bar. Round-2 walk-forward sweep on XAU 15m: 30 bars (7.5h) beat 24 on every metric — 91 trades @ 80.2% WR / +20.70R vs 79 @ 75.9% / +11.09R, and both unseen windows improve too. The compare dimension expiry scans 12/24/30.">
             Order expiry
           </label>
           <select id="bt-exp" value={orderExpiry} onChange={(e) => setOrderExpiry(e.target.value)} className={selectCls}>
             <option value="6">6 bars</option>
             <option value="12">12 bars</option>
             <option value="18">18 bars</option>
-            <option value="24">24 bars (verified best)</option>
+            <option value="24">24 bars</option>
+            <option value="30">30 bars (verified best)</option>
           </select>
         </div>
         <div>
@@ -786,7 +791,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <label htmlFor="bt-cdim" className="mb-1 block text-xs text-muted-foreground">Compare dimension</label>
             <select id="bt-cdim" value={compareDim} onChange={(e) => setCompareDim(e.target.value as CompareDimension)} className={selectCls}>
               <option value="strictness">Strictness presets</option>
-              <option value="expiry">Expiry window (6/12/24)</option>
+              <option value="expiry">Expiry window (12/24/30)</option>
               <option value="sessions">Sessions (all vs kill zones)</option>
               <option value="entry">Entry placement (edge/tolerance/midpoint)</option>
               <option value="be">Breakeven rule (BE+ vs plain vs risk1 vs structural)</option>

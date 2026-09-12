@@ -659,7 +659,7 @@ export function csvConfigFromUi(
     entryAnchor: ui.entryAnchor as never,
     entryToleranceR: ui.entryToleranceR,
     maxCostPctOfR: ui.maxCostPctOfR,
-    targetHorizonR: ui.targetHorizonR ?? 8,
+    targetHorizonR: ui.targetHorizonR ?? 12,
     obInvalidation: ui.obInvalidation as never,
     obDisplacementFactor: ui.obDisplacementFactor,
     tierB: ui.tierB,
@@ -856,9 +856,9 @@ export function strictnessRowCsv(opts: CsvRunOptions, strictness: Strictness, ba
 export function dimensionPlan(dim: Exclude<CompareDimension, "strictness">): { label: string; description: string; over: Partial<EngineConfig> }[] {
   if (dim === "expiry") {
     return [
-      { label: "6-bar expiry", description: "pending limits live 6 bars", over: { orderExpiryBars: 6 } },
-      { label: "12-bar expiry", description: "pending limits live 12 bars (previous default)", over: { orderExpiryBars: 12 } },
-      { label: "24-bar expiry", description: "pending limits live 24 bars — verified best on XAU 15m (current default)", over: { orderExpiryBars: 24 } },
+      { label: "12-bar expiry", description: "pending limits live 12 bars (pre-sweep default)", over: { orderExpiryBars: 12 } },
+      { label: "24-bar expiry", description: "pending limits live 24 bars — round-1 sweep winner", over: { orderExpiryBars: 24 } },
+      { label: "30-bar expiry", description: "pending limits live 30 bars — round-2 verified best (current default)", over: { orderExpiryBars: 30 } },
     ];
   }
   if (dim === "sessions") {
@@ -870,9 +870,9 @@ export function dimensionPlan(dim: Exclude<CompareDimension, "strictness">): { l
   if (dim === "entry") {
     return [
       { label: "Edge + strict", description: "limit at the proximal edge, no tolerance (honest-touch baseline)", over: { entryAnchor: "edge", entryToleranceR: 0 } },
-      { label: "Edge + 0.05R tolerance", description: "marketable last-look within 0.05R of the edge limit", over: { entryAnchor: "edge", entryToleranceR: 0.05 } },
+      { label: "Edge + 0.15R tolerance", description: "marketable last-look within 0.15R of the edge limit", over: { entryAnchor: "edge", entryToleranceR: 0.15 } },
       { label: "Midpoint + strict", description: "limit at the zone midpoint — deeper fill, worse location", over: { entryAnchor: "midpoint", entryToleranceR: 0 } },
-      { label: "Midpoint + 0.05R tolerance", description: "marketable last-look around the midpoint limit (verified best on XAU 15m)", over: { entryAnchor: "midpoint", entryToleranceR: 0.05 } },
+      { label: "Midpoint + 0.15R tolerance", description: "marketable last-look around the midpoint limit (verified best on XAU 15m)", over: { entryAnchor: "midpoint", entryToleranceR: 0.15 } },
     ];
   }
   if (dim === "ambiguity") {

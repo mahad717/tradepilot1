@@ -72,10 +72,10 @@ export function parseBacktestParams(
   const sessionsParam = searchParams.get("sessions") ?? "london,ny-am,ny-pm";
   const strictnessParam = searchParams.get("strictness") ?? "balanced";
   const entryAnchorParam = searchParams.get("entryAnchor") ?? "midpoint";
-  const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0.05");
+  const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0.15");
   const costGateParam = Number(searchParams.get("costGate") ?? "0.35");
-  const horizonParam = Number(searchParams.get("horizon") ?? "8");
-  const expiryParam = Number(searchParams.get("expiry") ?? "24");
+  const horizonParam = Number(searchParams.get("horizon") ?? "12");
+  const expiryParam = Number(searchParams.get("expiry") ?? "30");
   const obInvalidationParam = searchParams.get("obInvalidation") ?? "close-mid";
   const obDispParam = Number(searchParams.get("obDisp") ?? "1.2");
   const tierBParam = Number(searchParams.get("tierB") ?? "70");

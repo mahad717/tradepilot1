@@ -1,0 +1,10 @@
+import { readFileSync } from "node:fs";
+import { parseCsvCandles } from "../src/lib/market/csv.ts";
+import { runCsvBacktest, csvConfigFromUi } from "../src/lib/ict/run-core.ts";
+const text = readFileSync("../upload/XAU_15m_data.csv", "utf8");
+const t0 = performance.now();
+const { candles, summary } = parseCsvCandles(text);
+console.log(`parse: ${((performance.now()-t0)/1000).toFixed(1)}s, ${candles.length} candles`);
+const t1 = performance.now();
+const r = runCsvBacktest({ symbol: "XAUUSD", csvSummary: summary, candles, strictness: "balanced", config: csvConfigFromUi("XAUUSD", { minRR:2, beMode:"tp1cost", ambiguity:"optimistic", sessions:["london","ny-am","ny-pm"], entryAnchor:"midpoint", entryToleranceR:0.05, maxCostPctOfR:0.35, obInvalidation:"close-mid", obDisplacementFactor:1.2, tierB:70 }) });
+console.log(`run: ${((performance.now()-t1)/1000).toFixed(1)}s -> trades=${r.trades.length} wr=${r.metrics.winRate} net=${r.metrics.netR}`);
