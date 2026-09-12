@@ -633,3 +633,22 @@ Stage Summary:
 - Default config improved on EVERY metric with MORE trades — the standing constraint (raise WR, keep trade count) is satisfied with margin: 75.9% WR / +11.09R net / PF 7.93 / OOS+ / 5/5 periods, robust under pessimistic ambiguity (+9.95R).
 - Three-preset spectrum now ships: Best (79 trades, 75.9%) / All sessions max R (164 trades, 63.4%, +16.89R total) / Conservative baseline (172 trades, 34.3% honest-touch lower bound).
 - Sweep artifacts kept in scripts/ for future re-runs on other symbols/files.
+
+---
+Task ID: 20
+Agent: main (Super Z)
+Task: "Can we further improve" (round 2) — deeper sweep with walk-forward validation; standing constraint: raise WR without reducing trade count.
+
+Work Log:
+- Discovered workspace reset had orphaned the round-1 test scripts (scripts/*.mts were gitignored — never committed). Rebuilt the harness from scratch.
+- scripts/sweep2.mts: 49 single-knob variants on W1 (production tail 25k), including 7 knob families NEVER swept before: targetHorizonR (5/6/10/12), maxHoldBars (48/72/144), minBarsBetweenSignals (6/8/16), maxSweepAgeBars/maxStructureAgeBars, quality floors (sweep/disp/zone), stop-ATR bounds (min/max), partial-share ladder, session pairs, finer expiry/tolerance/costGate grids, all 4 OB invalidation modes. 8 qualifiers (trades>=79 AND wr>=75.9): expiry 30 (+2.76R), partials 40/30/30 (+1.3pp WR), horizon 12, tol 0.15, maxHold 48, horizon 10, minStopAtr 0.35, expiry 36.
+- scripts/sweep2b.mts: 16 interaction combos + walk-forward gate. Champion E30+P40+T15+H12: W1 91 trades / 80.2% WR / PF 17.43 / DD 0.26R / +20.70R. UNSEEN windows: W2 +3.10R (old +0.42R), W3 +1.82R (old −3.11R — losing window turned positive). Verdict SHIP — improves everywhere, opposite of overfitting. Note: GRAND combo adding maxHold 48 was worse (+17.99R) — timeouts cut eventual winners.
+- Honesty telemetry: pessimistic read at new defaults 78.0% / +19.71R (2.2pp spread), randomized 79.1% / +20.34R; 43/91 tolerance fills flagged; OOS +9.03R; 5/5 periods positive (1.76/4.35/5.38/0.18/9.03).
+- Shipped (commit 50c7d64): DEFAULT_CONFIG orderExpiryBars 30, partialShares [0.4,0.3,0.3], entryToleranceR 0.15, targetHorizonR 12 (all with inline rationale); params.ts fallbacks (0.15/12/30); UI defaults + selects (0.15R option, 30-bar option) + onBest check + re-measured preset tooltips (Best 91/80.2/+20.70 · Baseline 172/36.0/+7.86 DD 5.11 · Max R 194/71.6/+31.23 OOS +12.43); compare rows expiry 12/24/30 + entry 0.15R variants in BOTH mirrors (run-core dimensionPlan + backtest.ts server).
+- scripts/test-best-settings.mts rebuilt: 20/20 — bit-exact 91/80.2/17.43/0.26/20.70, config echo, ambiguity spread, W2/W3 generalization gate, compare-plan shapes. tsc (4 pre-existing unrelated), eslint clean, next build clean.
+- Sweep/test .mts scripts force-added to git (were gitignored) so future resets keep the audit trail.
+
+Stage Summary:
+- Second consecutive sweep that improves EVERY metric at MORE trades: 71→79→91 trades, 74.6→75.9→80.2% WR, +7.31→+11.09→+20.70R, PF 5.63→7.93→17.43, DD 0.46→0.46→0.26R. The win is structural (ladder 40/30/30 + wider horizon lets TP2/TP3 runners carry the edge) rather than parameter noise, proven by both unseen windows improving.
+- Max-R preset now prints +31.23R at 71.6% WR (194 trades) — the aggressive end also got stronger under the same quality knobs.
+- KEY INSIGHT: the biggest lever this round was trade MANAGEMENT (partial ladder + target horizon), not entry selection — entries were already near-optimal; the exits were bottlenecking the R.
