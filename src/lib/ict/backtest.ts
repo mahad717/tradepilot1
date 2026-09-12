@@ -361,9 +361,9 @@ export function debugCorePhases(
   if (!cfg.costs.XAUUSD) cfg.costs = { ...DEFAULT_COSTS };
   const timings: Record<string, number> = { bars: candles.length, stopAfter: 0 };
   timings.stopAfter = stopAfter === "ctx" ? 1 : stopAfter === "scan" ? 2 : 3;
-  let t0 = Date.now();
+  let t0 = performance.now();
   const ctx = buildSeriesContext(symbol, interval, candles, smtEvents, cfg.obInvalidation, cfg.obDisplacementFactor);
-  timings.buildSeriesContextMs = Date.now() - t0;
+  timings.buildSeriesContextMs = performance.now() - t0;
   timings.zones = ctx.zones.length;
   timings.sweeps = ctx.sweeps.length;
   timings.pools = ctx.pools.length;
@@ -383,18 +383,18 @@ export function debugCorePhases(
   };
   const executeOpts = { parentSeconds: ctx.intervalSec };
 
-  t0 = Date.now();
+  t0 = performance.now();
   const scan = scanTrades(ctx, candles, cfg, execute, executeOpts);
-  timings.scanMs = Date.now() - t0;
+  timings.scanMs = performance.now() - t0;
   timings.ordersPlaced = ctx.funnel.ordersPlaced;
   timings.trades = scan.trades.length;
   if (stopAfter === "scan") return timings;
 
-  t0 = Date.now();
+  t0 = performance.now();
   const metrics = computeMetrics(scan.trades);
   const wf = walkForward(scan.trades, candles.length, cfg.warmupBars, 5);
   const mc = scan.trades.length >= 5 ? runMonteCarlo(scan.trades.map((t) => t.netR), 1000, cfg.randomSeed) : null;
-  timings.postMs = Date.now() - t0;
+  timings.postMs = performance.now() - t0;
   timings.mcPaths = mc ? 1000 : 0;
   timings.netR = Math.round(metrics.netR * 100) / 100;
   return timings;

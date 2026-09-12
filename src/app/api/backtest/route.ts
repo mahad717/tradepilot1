@@ -175,10 +175,10 @@ export async function GET(req: Request) {
           source: fetchRes.source, timings: { fetchMs: Date.now() - t0 },
         });
       }
-      const ct0 = Date.now();
+      const ct0 = performance.now();
       const companion = fetchRes.source === "LIVE" ? await getCompanionCandles(symbol, interval, bars) : null;
       const cc = companion && !companion.error ? dropWeekendCandles(companion.candles).candles : [];
-      const st0 = Date.now();
+      const st0 = performance.now();
       const events = cc.length > 40 ? smtSeries(candles, cc) : [];
       if (stageParam === "smt") {
         return NextResponse.json({
@@ -189,7 +189,7 @@ export async function GET(req: Request) {
       }
     }
     if (stageParam === "core") {
-      const t0 = Date.now();
+      const t0 = performance.now();
       if (searchParams.get("dbg") === "1") {
         // phase-by-phase timings on the real window (small payload) — used to
         // localize deep-window Worker CPU exhaustion
