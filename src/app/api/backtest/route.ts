@@ -221,7 +221,7 @@ export async function GET(req: Request) {
 
     const result = await runBacktest({ symbol, interval, bars, strictness, config: buildConfig(), includeCompanion: !smtOffParam });
 
-    let payload: unknown = result;
+    let payload: object = result;
     if (trimParam) {
       const { trades, rejectedSamples, ...rest } = result;
       payload = {
