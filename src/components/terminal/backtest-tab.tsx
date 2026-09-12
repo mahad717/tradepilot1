@@ -334,17 +334,18 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         if (attempt > 0) await new Promise((r) => setTimeout(r, 2500 * attempt));
         const res = await fetch(`/api/backtest?${params.toString()}`);
         try {
-          json = await res.json();
+          json = (await res.json()) as Record<string, unknown>;
         } catch {
           lastErr = `Transient worker error (HTTP ${res.status}) — retrying…`;
+          json = null;
           continue;
         }
         if (res.ok && json) break;
-        lastErr = (json.error as string) ?? `HTTP ${res.status}`;
+        lastErr = typeof json?.error === "string" ? json.error : `HTTP ${res.status}`;
         json = null;
       }
       if (!json) throw new Error(lastErr);
-      setResult(json as typeof result);
+      setResult(json as unknown as typeof result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Backtest failed");
     } finally {
