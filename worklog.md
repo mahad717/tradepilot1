@@ -459,3 +459,24 @@ Stage Summary:
 - The path to replacing TwelveData for backtesting is unchanged and now stated in the
   UI: an INTRADAY file (5m/15m/1H, ≥150 candles; several months ideal). The CSV route,
   parser, preview and macro context all light up the moment such a file is uploaded.
+
+---
+Task ID: 16b
+Agent: Super Z (main agent)
+Task: User supplied a GitHub token + repo (mahad717/tradepilot1) — push the pending
+work (Tasks 15 + 16) so Cloudflare CI can deploy it.
+
+Work Log:
+- origin was already configured for this repo with a stale embedded token; replaced it
+  with the user's fresh token (kept embedded per the project's existing convention).
+- Remote main was behind at b43c200 (Task 14 docs commit); verified it is a direct
+  ancestor of local main → clean fast-forward push, no force needed.
+- Pushed: b43c200..fc3ca0e main → main. This ships the CSV backtest data source
+  (d25d996) + weekly/monthly granularity & macro-context (2365931) + the auto-sync
+  commit to GitHub.
+
+Stage Summary:
+- GitHub repo now current; Cloudflare Workers Builds (git-connected) should pick it up
+  and deploy tradepilot1.gabeyre80.workers.dev automatically.
+- Security note recorded: the token was shared in chat — recommend the user rotate it
+  once convenient; rotation requires updating the origin URL again.
