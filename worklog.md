@@ -403,3 +403,59 @@ Stage Summary:
 - The engine now runs "for backtesting only" on uploaded history end-to-end with no TwelveData involvement: no API credits, no rate limits, no deep-fetch shortfall, byte-identical engine core and diagnostics.
 - User's current file is daily/23-row — the UI and API both say precisely what to upload instead (several months of 5m/15m/1H; Investing.com export format works as-is).
 - Next steps: user uploads a real intraday CSV (same export flow), then P1 WR batch continues on top of the CSV source (entry placement levers #3/#4 apply unchanged to CSV runs).
+
+---
+Task ID: 16
+Agent: Super Z (main agent)
+Task: User uploaded a second history file ("Here is a monthly one" — XAU_USD Historical
+Data (1).csv, 57 monthly bars Jan 2022 → Sep 2026, Investing.com export). Make the CSV
+backtest pipeline handle coarse uploads correctly instead of mislabeling them, and give
+the monthly data a real use.
+
+Work Log:
+- Diagnosis: BOTH uploads are MONTHLY exports (the first file was misread as "daily" in
+  Task 15 — 23 rows Oct 2024 → Sep 2026 are month bars dated the 1st, MM/DD/YYYY). The
+  parser snapped anything coarser than daily to 1day, so a monthly file reported "1D
+  detected" and a generic "upload a longer history" — misleading while the user keeps
+  downloading MORE calendar coverage when the engine actually needs INTRADAY granularity.
+- csv.ts: new CoarseGranularity classification from the RAW median gap (unsnapped) —
+  intraday/daily/weekly/monthly (classifyGranularity: <1d, <5d, ≤20d, else monthly);
+  CsvParseSummary gains granularity + medianGapSeconds; weekly/monthly files now emit a
+  precise warning ("engine CANNOT run on them… upload intraday history"); daily keeps
+  its coarse-approximation warning.
+- NEW coarseContext(candles, granularity) — pure/isomorphic ICT macro read for coarse
+  uploads: last close vs previous COMPLETED period's high/low (buy/sell-side liquidity
+  taken vs inside), 6-period dealing range with premium/discount/equilibrium position,
+  fractal swing structure (pivot span 2 → bullish HH+HL / bearish / mixed, with pivot
+  count for honesty), end-of-file close streak. Null below 8 candles.
+- backtest.ts: the <150-candle CSV error is granularity-aware — monthly/weekly files get
+  "CSV data is MONTHLY (57 usable candles from 57 rows)… needs ≥150 INTRADAY candles
+  (5m/15m/1H)… weekly/monthly files serve as macro context only" instead of the generic
+  longer-history message.
+- backtest-tab.tsx: preview chip shows MONTHLY/WEEKLY detected (not the 1D snap); the
+  red <150 guidance now tells the user exactly what replaces TwelveData for backtests
+  (5m/15m/1H — investing.com Time-frame selector limited range, or Dukascopy free
+  exports covering years of 5m/15m XAUUSD); NEW "Macro context from this file ·
+  informational only" panel renders the coarseContext read when a daily/weekly/monthly
+  file is chosen (engine keeps refusing to run on it — Run stays gated).
+- Tests: parser suite 21 → 59 checks, ALL PASS — both real monthly uploads (57/23 bars,
+  granularity monthly, prev-period H/L = Aug 2026 4697.66/4019.19, close inside,
+  6-month leg 3944.23–5419.25 @ 27.4% discount), synthetic weekly fixture, granularity
+  unit checks, hand-built 12-bar coarseContext fixture (bullish HH+HL, leg 101–112,
+  54.5% equilibrium, 2×down streak), monotonic → structure null, <8 → null. Two test
+  authoring bugs fixed en route (Date.UTC ms-vs-s in fixtures; first file starts Oct
+  2024 so from=2024).
+- Live verification: POST monthly file → /api/backtest/csv returns the precise MONTHLY
+  400 with csvSummary diagnostics; selftest endpoint 25/25; tsc clean + eslint clean on
+  all touched files (prevHigh/prevLow narrowed to non-null in CoarseContext); browser
+  smoke test — dashboard → Backtesting → CSV source → upload file: "MONTHLY detected",
+  macro-context panel renders with live values (last close 4348.72, inside Aug range,
+  6-month discount 27.4%, mixed structure 10 pivots), Run correctly disabled.
+
+Stage Summary:
+- The monthly upload is now correctly recognized, precisely explained, and put to work
+  as higher-timeframe macro context — while the engine still refuses to pretend it can
+  backtest on 57 month bars. Commit: see git log (Task 16).
+- The path to replacing TwelveData for backtesting is unchanged and now stated in the
+  UI: an INTRADAY file (5m/15m/1H, ≥150 candles; several months ideal). The CSV route,
+  parser, preview and macro context all light up the moment such a file is uploaded.
