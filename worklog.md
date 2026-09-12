@@ -652,3 +652,22 @@ Stage Summary:
 - Second consecutive sweep that improves EVERY metric at MORE trades: 71→79→91 trades, 74.6→75.9→80.2% WR, +7.31→+11.09→+20.70R, PF 5.63→7.93→17.43, DD 0.46→0.46→0.26R. The win is structural (ladder 40/30/30 + wider horizon lets TP2/TP3 runners carry the edge) rather than parameter noise, proven by both unseen windows improving.
 - Max-R preset now prints +31.23R at 71.6% WR (194 trades) — the aggressive end also got stronger under the same quality knobs.
 - KEY INSIGHT: the biggest lever this round was trade MANAGEMENT (partial ladder + target horizon), not entry selection — entries were already near-optimal; the exits were bottlenecking the R.
+
+---
+Task ID: 21
+Agent: main (Super Z)
+Task: "yes push further" — push the "All sessions · max R" preset further (Task 20 follow-up), same constraints: trades must not shrink, WR-first.
+
+Work Log:
+- scripts/sweep3-maxr.mts: 42 single-knob variants on the Max-R base (194/71.6%/+31.23R anchor) — target reach, 7 partial ladders, tol grid, expiry grid, tierB, costGate, minRR, cooldown, ages, floors, stop-ATR, beTrigger, maxHold. 10 qualified; tolerance again the deepest lever (tol 0.25 alone: 209/79.9%/+37.61R).
+- scripts/sweep3b.mts: 14 combos — ALL pass the trade/WR/net qualifier. Raw-net auto-pick was T20+C8+P2550 (+51.02R) but T25+C8+P2550 (209/82.3%/PF 11.88/DD 1.12/+50.38R) wins under the user's WR-first hierarchy → shipped.
+- best-guard.mts ship-decision test: cooldown 8 is a verified NO-OP on Best (identical 91/80.2/+20.70) → safe as engine default; partials 25/25/50 would cut Best WR to 78.0% (violates WR-first identity) → must be preset-specific, NOT an engine default.
+- Shipped (commit 4a0bcf0): engine minBarsBetweenSignals 12→8 (inline rationale); NEW UI knob 'TP ladder' (40/30/30 Best / 25/25/50 Max R / 30/35/35 / 50/25/25 legacy) threaded through params.ts 'ladder' param (a/b/c sum-100 validation) and csvConfigFromUi partialShares; tolerance select gains 0.25R option; Max R preset = tol 0.25 + ladder 25/25/50 with re-measured tooltip; baseline tooltip re-measured under cooldown 8 (181/35.4%/PF 1.41/DD 6.03/+7.11R); onBest/onMaxR active-checks extended.
+- Walk-forward gates: W2 +9.92R @ 54.7% (old +1.74R @ 33.6%), W3 +15.75R @ 56.3% (old +2.27R @ 40.0%) — PASS. Pessimistic read 80.4%/+39.59R (1.9pp spread). OOS +13.40R, 5/5 GREEN.
+- test-best-settings.mts extended: 31/31 (Best unchanged-block + Max R champion + gates + ladder echo + pessimistic read). tsc clean (4 pre-existing), eslint clean, build clean.
+- Fixed a self-inflicted edit bug: partialShares ui-type edit accidentally dropped spread?: field from csvConfigFromUi input — caught and restored before build.
+
+Stage Summary:
+- Third consecutive improvement round. Trajectory: 71→79→91 Best trades (74.6→75.9→80.2% WR, +7.31→+11.09→+20.70R); Max R now 209 trades @ 82.3% WR / +50.38R (was 194 @ 71.6% / +31.23R). The Max R champion now BEATS the Best preset on total R while holding a higher WR than Best ever had at this trade count.
+- Structural insight: the all-sessions profile rewards a wider last-look (0.25R) + runner-heavy exits; the kill-zone profile rewards the tight 40/30/30 ladder. Presets now legitimately diverge on trade management, which required exposing partialShares as a first-class UI knob (previously engine-only).
+- Cumulative shipped knobs now: expiry 30, tolerance (0.15 Best / 0.25 Max R), ladders (40/30/30 Best / 25/25/50 Max R), horizon 12, cooldown 8, BE+ costs, midpoint anchor, optimistic ambiguity, kill-zone sessions (Best).
