@@ -27,6 +27,10 @@ export function atrSeries(candles: Candle[], period = 14): number[] {
  * trailing empirical distribution (percentile bands over `window` bars).
  *   < 20th percentile → LOW, 20–80 → NORMAL, 80–95 → HIGH, > 95 → EXTREME
  * Causal: the reference distribution only uses ATR values up to i-1.
+ *
+ * The reference window is kept as a ROLLING SORTED array (binary-search
+ * insert/evict) instead of slice+sort per bar — identical percentiles,
+ * O(window) memmove per bar instead of O(window log window) sort.
  */
 export function volRegimeSeries(
   candles: Candle[],
@@ -34,19 +38,48 @@ export function volRegimeSeries(
   window = 200
 ): VolatilityRegime[] {
   const out = new Array<VolatilityRegime>(candles.length).fill("NORMAL");
-  const pctHistory: number[] = [];
+  const pct: number[] = new Array(candles.length);
+  for (let i = 0; i < candles.length; i++) pct[i] = candles[i].close > 0 ? atr[i] / candles[i].close : 0;
+
+  const sorted: number[] = []; // ascending; holds pct[i-window .. i-1]
+  const insert = (v: number) => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < v) lo = mid + 1;
+      else hi = mid;
+    }
+    sorted.splice(lo, 0, v);
+  };
+  const remove = (v: number) => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < v) lo = mid + 1;
+      else hi = mid;
+    }
+    // v is always present (it was inserted window steps ago)
+    if (lo < sorted.length && sorted[lo] === v) sorted.splice(lo, 1);
+    else {
+      const idx = sorted.indexOf(v);
+      if (idx !== -1) sorted.splice(idx, 1);
+    }
+  };
+  const q = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+
   for (let i = 0; i < candles.length; i++) {
-    const pct = candles[i].close > 0 ? atr[i] / candles[i].close : 0;
-    if (i >= 30) {
-      const ref = pctHistory.slice(-window);
-      ref.sort((a, b) => a - b);
-      const q = (p: number) => ref[Math.min(ref.length - 1, Math.floor(p * ref.length))];
+    // transition window to [max(0, i-window), i-1]
+    if (i >= 1) insert(pct[i - 1]);
+    const evictIdx = i - 1 - window;
+    if (evictIdx >= 0) remove(pct[evictIdx]);
+    if (i >= 30 && sorted.length > 0) {
       const p20 = q(0.2);
       const p80 = q(0.8);
       const p95 = q(0.95);
-      out[i] = pct < p20 ? "LOW" : pct < p80 ? "NORMAL" : pct < p95 ? "HIGH" : "EXTREME";
+      out[i] = pct[i] < p20 ? "LOW" : pct[i] < p80 ? "NORMAL" : pct[i] < p95 ? "HIGH" : "EXTREME";
     }
-    pctHistory.push(pct);
   }
   return out;
 }

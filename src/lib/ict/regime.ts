@@ -30,6 +30,42 @@ export function marketRegimeSeries(
   let flips = 0;
   let lastFlipIndex = -1000;
 
+  // Rolling Kaufman path: path(i) = Σ |close[k]−close[k−1]| for k in [start+1, i],
+  // start = max(0, i−lookback+1). Updated incrementally (add right edge,
+  // drop left edge) — identical value, no per-bar slice/loop.
+  let path = 0;
+  // Rolling sorted window of trailing ATR% (atr[j]/close[j], j in
+  // [max(0, i−200), i−1]) for the expansion/contraction median — identical
+  // median, no per-bar slice+map+sort.
+  const refWindow = 200;
+  const atrPct: number[] = new Array(n);
+  for (let i = 0; i < n; i++) atrPct[i] = candles[i].close > 0 ? atr[i] / candles[i].close : 0;
+  const sorted: number[] = [];
+  const insert = (v: number) => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < v) lo = mid + 1;
+      else hi = mid;
+    }
+    sorted.splice(lo, 0, v);
+  };
+  const remove = (v: number) => {
+    let lo = 0;
+    let hi = sorted.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid] < v) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo < sorted.length && sorted[lo] === v) sorted.splice(lo, 1);
+    else {
+      const idx = sorted.indexOf(v);
+      if (idx !== -1) sorted.splice(idx, 1);
+    }
+  };
+
   for (let i = 0; i < n; i++) {
     while (evIdx < structureEvents.length && structureEvents[evIdx].index <= i) {
       const dir = structureEvents[evIdx].direction === "BULLISH" ? 1 : -1;
@@ -39,21 +75,21 @@ export function marketRegimeSeries(
     }
 
     const start = Math.max(0, i - lookback + 1);
-    const seg = candles.slice(start, i + 1);
-    const netMove = Math.abs(seg[seg.length - 1].close - seg[0].open);
-    let path = 0;
-    for (let k = start + 1; k <= i; k++) path += Math.abs(candles[k].close - candles[k - 1].close);
+    // incremental path maintenance
+    if (i >= 1) path += Math.abs(candles[i].close - candles[i - 1].close);
+    if (start >= 1) path -= Math.abs(candles[start].close - candles[start - 1].close);
+    const netMove = Math.abs(candles[i].close - candles[start].open);
     // efficiency ratio: net displacement / total path (Kaufman ER)
     const er = path > 0 ? netMove / path : 0;
 
-    const atrPct = candles[i].close > 0 ? atr[i] / candles[i].close : 0;
-    // expanding if current ATR% well above its trailing median
-    const refStart = Math.max(0, i - 200);
-    const refSlice = atr.slice(refStart, i).map((a, idx) => (candles[refStart + idx].close > 0 ? a / candles[refStart + idx].close : 0));
-    const refSorted = [...refSlice].sort((a, b) => a - b);
-    const medianAtrPct = refSorted.length ? refSorted[Math.floor(refSorted.length / 2)] : atrPct;
-    const expansion = medianAtrPct > 0 && atrPct > medianAtrPct * 1.6;
-    const contraction = medianAtrPct > 0 && atrPct < medianAtrPct * 0.6;
+    const atrPctI = atrPct[i];
+    // expansion/contraction reference: ATR% over [max(0, i−200), i−1]
+    if (i >= 1) insert(atrPct[i - 1]);
+    const evictIdx = i - 1 - refWindow;
+    if (evictIdx >= 0) remove(atrPct[evictIdx]);
+    const medianAtrPct = sorted.length ? sorted[Math.floor(sorted.length / 2)] : atrPctI;
+    const expansion = medianAtrPct > 0 && atrPctI > medianAtrPct * 1.6;
+    const contraction = medianAtrPct > 0 && atrPctI < medianAtrPct * 0.6;
 
     const recentFlip = i - lastFlipIndex < lookback / 2;
 
