@@ -159,6 +159,16 @@ export async function fetchCandlesRangeLive(
   }
 
   const candles = [...byTime.values()].sort((a, b) => a.time - b.time);
+  // bound the cache: each entry is a 15-25k-candle array (~3-5MB), and the key
+  // cardinality is arbitrary (any bars value > 5000), so an isolate serving
+  // many distinct windows would accumulate without limit. LRU by insertion.
+  if (!deepCache.has(key)) {
+    const MAX_DEEP_ENTRIES = 6;
+    if (deepCache.size >= MAX_DEEP_ENTRIES) {
+      const oldestKey = deepCache.keys().next().value;
+      if (oldestKey !== undefined) deepCache.delete(oldestKey);
+    }
+  }
   deepCache.set(key, { data: { candles, requests }, fetchedAt: now });
   return { candles, stale, requests };
 }

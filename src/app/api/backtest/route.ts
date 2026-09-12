@@ -5,7 +5,8 @@ import type { EngineConfig } from "@/lib/ict/sequence";
 import { DEFAULT_COSTS } from "@/lib/ict/costs";
 import { getAuthUser } from "@/lib/auth";
 import { getDb, DbUnavailableError } from "@/lib/db";
-import { isIntervalKey, isSymbolKey } from "@/lib/market";
+import { isIntervalKey, isSymbolKey, getCandles, getCandlesDeep, getCompanionCandles, dropWeekendCandles } from "@/lib/market";
+import { smtSeries } from "@/lib/ict/smtseries";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -16,6 +17,7 @@ const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
 const STRICTNESS_LEVELS = ["conservative", "balanced", "aggressive"];
 const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "be", "obInvalidation", "obDisplacement"];
 const OB_INVALIDATION_MODES = ["close-mid", "wick-mid", "close-distal", "wick-distal"];
+const DEBUG_STAGES = ["fetch", "smt", "core"];
 
 /**
  * Persistence features need a database (D1 on Cloudflare, SQLite locally).
@@ -63,6 +65,9 @@ export async function GET(req: Request) {
   const compare = searchParams.get("compare") === "1";
   const compareDimParam = searchParams.get("compareDim") ?? "strictness";
   const sensitivityParam = searchParams.get("sensitivity") ?? "";
+  // debug: run the deep pipeline stage by stage (fetch → smt → core) so a
+  // resource-limit failure can be localized from the outside
+  const stageParam = searchParams.get("stage") ?? "";
 
   if (!isSymbolKey(symbol)) {
     return NextResponse.json({ error: "Unknown symbol" }, { status: 400 });
@@ -157,6 +162,44 @@ export async function GET(req: Request) {
   };
 
   try {
+    if (DEBUG_STAGES.includes(stageParam)) {
+      const t0 = Date.now();
+      const fetchRes = bars > 5000
+        ? await getCandlesDeep(symbol, interval, bars)
+        : await getCandles(symbol, interval, bars);
+      const { candles } = dropWeekendCandles(fetchRes.candles);
+      if (stageParam === "fetch") {
+        return NextResponse.json({
+          stage: "fetch", bars: candles.length, raw: fetchRes.candles.length,
+          requests: (fetchRes as { requests?: number }).requests ?? 0,
+          source: fetchRes.source, timings: { fetchMs: Date.now() - t0 },
+        });
+      }
+      const ct0 = Date.now();
+      const companion = fetchRes.source === "LIVE" ? await getCompanionCandles(symbol, interval, bars) : null;
+      const cc = companion && !companion.error ? dropWeekendCandles(companion.candles).candles : [];
+      const st0 = Date.now();
+      const events = cc.length > 40 ? smtSeries(candles, cc) : [];
+      return NextResponse.json({
+        stage: "smt", bars: candles.length, companionBars: cc.length, events: events.length,
+        companionError: companion?.error ?? null,
+        timings: { fetchMs: Date.now() - t0, companionMs: Date.now() - ct0, smtSeriesMs: Date.now() - st0 },
+      });
+    }
+    if (stageParam === "core") {
+      const t0 = Date.now();
+      const result = await runBacktest({ symbol, interval, bars, strictness, config: buildConfig() });
+      const c0 = Date.now();
+      const payload = JSON.stringify(result);
+      const stringifyMs = Date.now() - c0;
+      return NextResponse.json({
+        stage: "core", metrics: result.metrics, fetch: result.fetch,
+        counts: { trades: result.trades.length, rejectedSamples: result.rejectedSamples.length, rejections: result.rejections.length },
+        payloadBytes: payload.length,
+        timings: { totalMs: Date.now() - t0, stringifyMs },
+      });
+    }
+
     const result = await runBacktest({
       symbol,
       interval,
