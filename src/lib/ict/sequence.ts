@@ -226,7 +226,11 @@ export const DEFAULT_CONFIG: EngineConfig = {
   // 0.15R marketable last-look: a candle approaching within 0.15R of the edge
   // limit fills. Round-2 sweep (Task 20): 0.15 beats 0.05 on the real XAU 15m
   // file at MORE trades (88-91 vs 79) AND higher WR — the extra fills are
-  // near-miss winners, not junk. Every tolerance fill is counted
+  // near-miss winners, not junk. Round-4 sweep (Task 22): 0.25R measures
+  // higher still on the kill-zone profile (104/87.5%/+27.28R vs 91/80.2%/
+  // +20.70R) and is shipped at the PRESET level (Best & Max R), matching the
+  // 0.25R ceiling already shipped on Max R; the engine default stays at the
+  // conservative 0.15R for API/no-UI callers. Every tolerance fill is counted
   // (orderFlow.toleranceFills) and flagged on the trade (trade.toleranceFill);
   // compare → entry quantifies the assumption; walk-forward W2/W3 confirm it
   // generalizes beyond the selection window.

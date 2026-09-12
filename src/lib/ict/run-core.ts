@@ -875,7 +875,7 @@ export function dimensionPlan(dim: Exclude<CompareDimension, "strictness">): { l
       { label: "Edge + strict", description: "limit at the proximal edge, no tolerance (honest-touch baseline)", over: { entryAnchor: "edge", entryToleranceR: 0 } },
       { label: "Edge + 0.15R tolerance", description: "marketable last-look within 0.15R of the edge limit", over: { entryAnchor: "edge", entryToleranceR: 0.15 } },
       { label: "Midpoint + strict", description: "limit at the zone midpoint — deeper fill, worse location", over: { entryAnchor: "midpoint", entryToleranceR: 0 } },
-      { label: "Midpoint + 0.15R tolerance", description: "marketable last-look around the midpoint limit (verified best on XAU 15m)", over: { entryAnchor: "midpoint", entryToleranceR: 0.15 } },
+      { label: "Midpoint + 0.25R tolerance", description: "marketable last-look around the midpoint limit (preset best on XAU 15m — round-4 sweep)", over: { entryAnchor: "midpoint", entryToleranceR: 0.25 } },
     ];
   }
   if (dim === "ambiguity") {

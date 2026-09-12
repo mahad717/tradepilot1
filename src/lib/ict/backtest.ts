@@ -252,7 +252,7 @@ export async function compareDimension(
       run("Edge + strict", "limit at the proximal edge, no tolerance (honest-touch baseline)", { entryAnchor: "edge", entryToleranceR: 0 }),
       run("Edge + 0.15R tolerance", "marketable last-look within 0.15R of the edge limit", { entryAnchor: "edge", entryToleranceR: 0.15 }),
       run("Midpoint + strict", "limit at the zone midpoint — deeper fill, worse location", { entryAnchor: "midpoint", entryToleranceR: 0 }),
-      run("Midpoint + 0.15R tolerance", "marketable last-look around the midpoint limit (verified best on XAU 15m)", { entryAnchor: "midpoint", entryToleranceR: 0.15 }),
+      run("Midpoint + 0.25R tolerance", "marketable last-look around the midpoint limit (preset best on XAU 15m — round-4 sweep)", { entryAnchor: "midpoint", entryToleranceR: 0.25 }),
     ]);
     return { dimension, rows };
   }

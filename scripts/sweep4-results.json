@@ -1,0 +1,382 @@
+{
+  "baseline": {
+    "W1": {
+      "name": "W1 tail (production)",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    }
+  },
+  "phase1": [
+    {
+      "name": "tol 0.2",
+      "trades": 99,
+      "wr": 84.8,
+      "net": 23.53,
+      "pf": 24.77,
+      "dd": 0.26
+    },
+    {
+      "name": "tol 0.25",
+      "trades": 102,
+      "wr": 87.3,
+      "net": 24.56,
+      "pf": 27.13,
+      "dd": 0.26
+    },
+    {
+      "name": "ladder 35/30/35",
+      "trades": 90,
+      "wr": 82.2,
+      "net": 22,
+      "pf": 17.79,
+      "dd": 0.26
+    },
+    {
+      "name": "ladder 30/30/40",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 23.37,
+      "pf": 18.06,
+      "dd": 0.25
+    },
+    {
+      "name": "ladder 45/25/30",
+      "trades": 90,
+      "wr": 77.8,
+      "net": 19.65,
+      "pf": 15.66,
+      "dd": 0.27
+    },
+    {
+      "name": "ladder 40/25/35",
+      "trades": 91,
+      "wr": 81.3,
+      "net": 21.2,
+      "pf": 16.25,
+      "dd": 0.28
+    },
+    {
+      "name": "ladder 35/25/40",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 22.47,
+      "pf": 16.5,
+      "dd": 0.28
+    },
+    {
+      "name": "ladder 45/30/25",
+      "trades": 90,
+      "wr": 77.8,
+      "net": 16.26,
+      "pf": 14.33,
+      "dd": 0.26
+    },
+    {
+      "name": "ladder 30/35/35",
+      "trades": 91,
+      "wr": 81.3,
+      "net": 22.95,
+      "pf": 19.81,
+      "dd": 0.23
+    },
+    {
+      "name": "ladder 40/40/20",
+      "trades": 91,
+      "wr": 83.5,
+      "net": 17.1,
+      "pf": 17.6,
+      "dd": 0.21
+    },
+    {
+      "name": "ladder 35/35/30",
+      "trades": 90,
+      "wr": 83.3,
+      "net": 21.52,
+      "pf": 19.39,
+      "dd": 0.23
+    },
+    {
+      "name": "ladder 50/20/30",
+      "trades": 91,
+      "wr": 74.7,
+      "net": 18.85,
+      "pf": 13.08,
+      "dd": 0.32
+    },
+    {
+      "name": "ladder 30/25/45",
+      "trades": 91,
+      "wr": 78,
+      "net": 23.58,
+      "pf": 16.41,
+      "dd": 0.29
+    },
+    {
+      "name": "ladder 25/30/45",
+      "trades": 91,
+      "wr": 79.1,
+      "net": 24.51,
+      "pf": 17.9,
+      "dd": 0.25
+    },
+    {
+      "name": "horizon 10",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 19.56,
+      "pf": 16.52,
+      "dd": 0.26
+    },
+    {
+      "name": "horizon 14",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 18.13,
+      "pf": 15.39,
+      "dd": 0.26
+    },
+    {
+      "name": "horizon 16",
+      "trades": 90,
+      "wr": 80,
+      "net": 17.16,
+      "pf": 14.62,
+      "dd": 0.26
+    },
+    {
+      "name": "expiry 24",
+      "trades": 88,
+      "wr": 78.4,
+      "net": 17.65,
+      "pf": 14.47,
+      "dd": 0.27
+    },
+    {
+      "name": "expiry 36",
+      "trades": 92,
+      "wr": 80.4,
+      "net": 20.74,
+      "pf": 17.46,
+      "dd": 0.26
+    },
+    {
+      "name": "expiry 42",
+      "trades": 96,
+      "wr": 80.2,
+      "net": 21.1,
+      "pf": 16.07,
+      "dd": 0.26
+    },
+    {
+      "name": "tierB 65",
+      "trades": 93,
+      "wr": 80.6,
+      "net": 21.06,
+      "pf": 17.71,
+      "dd": 0.26
+    },
+    {
+      "name": "tierB 60",
+      "trades": 93,
+      "wr": 80.6,
+      "net": 21.06,
+      "pf": 17.71,
+      "dd": 0.26
+    },
+    {
+      "name": "tierB 75",
+      "trades": 88,
+      "wr": 79.5,
+      "net": 20.47,
+      "pf": 17.25,
+      "dd": 0.26
+    },
+    {
+      "name": "minRR 1.75",
+      "trades": 92,
+      "wr": 80.4,
+      "net": 20.75,
+      "pf": 17.47,
+      "dd": 0.26
+    },
+    {
+      "name": "minRR 1.5",
+      "trades": 93,
+      "wr": 80.6,
+      "net": 20.77,
+      "pf": 17.48,
+      "dd": 0.26
+    },
+    {
+      "name": "maxStopAtr 3.0",
+      "trades": 100,
+      "wr": 80,
+      "net": 20.84,
+      "pf": 15.78,
+      "dd": 0.36
+    },
+    {
+      "name": "maxStopPct 0.015",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "maxStopPct 0.03",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "costGate 0.30",
+      "trades": 88,
+      "wr": 79.5,
+      "net": 17.52,
+      "pf": 14.8,
+      "dd": 0.27
+    },
+    {
+      "name": "costGate 0.45",
+      "trades": 93,
+      "wr": 79.6,
+      "net": 20.71,
+      "pf": 15.38,
+      "dd": 0.4
+    },
+    {
+      "name": "zoneCooldown off",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "onePerSweep off",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "drop A sweep",
+      "trades": 87,
+      "wr": 80.5,
+      "net": 20.29,
+      "pf": 17.63,
+      "dd": 0.22
+    },
+    {
+      "name": "drop B fvg",
+      "trades": 19,
+      "wr": 89.5,
+      "net": 1.96,
+      "pf": 15,
+      "dd": 0.14
+    },
+    {
+      "name": "drop C ob",
+      "trades": 91,
+      "wr": 79.1,
+      "net": 20.52,
+      "pf": 15.55,
+      "dd": 0.41
+    },
+    {
+      "name": "drop D confluence",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "add E smt",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "confirmed sweeps only",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "req premium/discount",
+      "trades": 89,
+      "wr": 80.9,
+      "net": 20.63,
+      "pf": 17.37,
+      "dd": 0.26
+    },
+    {
+      "name": "block HIGH vol",
+      "trades": 79,
+      "wr": 82.3,
+      "net": 20,
+      "pf": 17.95,
+      "dd": 0.26
+    },
+    {
+      "name": "beTrigger 0.8",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "beTrigger 1.2",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "maxHold 48",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 17.99,
+      "pf": 15.28,
+      "dd": 0.26
+    },
+    {
+      "name": "maxHold 144",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "rangeLook 72",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    },
+    {
+      "name": "rangeLook 120",
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7,
+      "pf": 17.43,
+      "dd": 0.26
+    }
+  ]
+}

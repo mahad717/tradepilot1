@@ -547,23 +547,25 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         : "border-amber-900/50 bg-amber-950/30 text-amber-300";
   const maxFunnel = result ? Math.max(1, ...result.funnel.map((f) => f.count)) : 1;
 
-  // Named knob sets — "Best" is the user-verified config + the round-2
-  // walk-forward sweep upgrade (XAUUSD 15m, 480k-candle CSV, 25k window):
-  // 91 trades · 80.2% WR · PF 17.43 · +20.70R net · maxDD 0.26R · OOS +9.03R ·
-  // 5/5 periods. "Baseline" is the conservative read of the SAME data
-  // (pessimistic ambiguity, edge fills, all sessions): 181 trades · 35.4% WR ·
-  // +7.11R · DD 6.03R. "Max R" is the round-3 champion: all sessions with a
-  // wider 0.25R last-look and a runner-heavy 25/25/50 ladder — 209 trades ·
-  // 82.3% WR · +50.38R.
+  // Named knob sets — "Best" is the round-4 walk-forward sweep champion
+  // (XAUUSD 15m, 480k-candle CSV, 25k window): London+NY kill zones · tol
+  // 0.25R · 30/35/35 ladder · B-floor 65 → 104 trades · 87.5% WR · PF 31.65 ·
+  // +27.28R net · maxDD 0.23R · OOS +11.78R · 5/5 periods, and both unseen
+  // windows nearly double/triple (+5.98R / +6.01R vs +3.10R / +1.82R).
+  // "Baseline" is the conservative read of the SAME data (pessimistic
+  // ambiguity, edge fills, plain BE, all sessions, 24-bar expiry): 179
+  // trades · 39.1% WR · +16.37R · DD 4.79R. "Max R" stays the round-3
+  // champion: all sessions · 0.25R last-look · 25/25/50 ladder — 209 trades
+  // · 82.3% WR · +50.38R.
   const PRESETS: Record<string, { label: string; title: string; values: Record<string, string> }> = {
     best: {
       label: "★ Best (verified)",
-      title: "User-verified + walk-forward-sweep on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.15R tolerance · 30-bar expiry · 40/30/30 ladder — 91 trades, 80.2% WR, PF 17.43, maxDD 0.26R, +20.70R net, OOS +9.03R, 5/5 periods (GREEN). Both unseen windows improve too (+3.10R / +1.82R) — generalizes beyond the fitted window. Pessimistic read: 78.0% / +19.71R.",
-      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.15", orderExpiry: "30", ladder: "40/30/30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "Round-4 walk-forward sweep champion on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.25R tolerance · 30-bar expiry · 30/35/35 ladder · B-floor 65 — 104 trades, 87.5% WR, PF 31.65, maxDD 0.23R, +27.28R net, OOS +11.78R, 5/5 periods (GREEN). Both unseen windows nearly double/triple (+5.98R / +6.01R vs old +3.10R / +1.82R). Pessimistic read: 86.5% / +26.69R (1.0pp spread). Tolerance fills counted & flagged: 71/104.",
+      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.25", orderExpiry: "30", ladder: "30/35/35", costGate: "0.35", minRR: "2", tierB: "65", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
     baseline: {
       label: "Conservative baseline",
-      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 181 trades, 35.4% WR, PF 1.41, maxDD 6.03R, +7.11R net. Use it as the lower bound.",
+      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills · 24-bar expiry — 179 trades, 39.1% WR, PF 2.27, maxDD 4.79R, +16.37R net. Use it as the lower bound.",
       values: { sessions: "", beMode: "tp1", ambiguity: "pessimistic", entryAnchor: "edge", entryTolerance: "0.05", orderExpiry: "24", ladder: "40/30/30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
     maxr: {
@@ -589,7 +591,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
     if (v.strictness !== undefined) setStrictness(v.strictness);
   }
   const onBest =
-    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && orderExpiry === "30" && ladder === "40/30/30";
+    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && orderExpiry === "30" && ladder === "30/35/35" && entryTolerance === "0.25" && tierB === "65";
   const onBaseline = sessions === "" && beMode === "tp1" && ambiguity === "pessimistic" && entryAnchor === "edge";
   const onMaxR = sessions === "" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && ladder === "25/25/50" && entryTolerance === "0.25";
 
@@ -723,8 +725,8 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <option value="0">Strict touch</option>
             <option value="0.05">+0.05R</option>
             <option value="0.1">+0.10R</option>
-            <option value="0.15">+0.15R (verified best)</option>
-            <option value="0.25">+0.25R (Max R best)</option>
+            <option value="0.15">+0.15R (engine default)</option>
+            <option value="0.25">+0.25R (verified best)</option>
           </select>
         </div>
         <div>
@@ -792,6 +794,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         <div>
           <label htmlFor="bt-tierb" className="mb-1 block text-xs text-muted-foreground" title="Minimum setup score allowed to trade (tier B floor). 70 = engine default. Raising it trades less — check the score-bucket table for what each floor would have excluded.">Min score (B floor)</label>
           <select id="bt-tierb" value={tierB} onChange={(e) => setTierB(e.target.value)} className={selectCls}>
+            <option value="65">65 (Best preset)</option>
             <option value="70">70 (default)</option>
             <option value="75">75</option>
             <option value="80">80</option>
