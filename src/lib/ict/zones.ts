@@ -13,7 +13,7 @@ import type { Candle, Zone } from "./types";
  */
 class RangeExtreme {
   private n: number;
-  private sparse: number[][] = [];
+  private sparse: Float64Array[] = [];
   constructor(
     private vals: number[],
     private maximize: boolean
@@ -21,11 +21,14 @@ class RangeExtreme {
     this.n = vals.length;
     if (this.n === 0) return;
     const levels = Math.floor(Math.log2(this.n)) + 1;
-    this.sparse = [vals.slice()];
+    // Float64Array rows: packed doubles, no per-element boxing — at 15k bars
+    // a table is n·log2(n) numbers ×4 tables per build, so the representation
+    // decides whether the deep path fits a Worker isolate comfortably.
+    this.sparse = [Float64Array.from(vals)];
     for (let k = 1; k < levels; k++) {
       const len = this.n - (1 << k) + 1;
       const prev = this.sparse[k - 1];
-      const row = new Array<number>(len);
+      const row = new Float64Array(len);
       for (let i = 0; i < len; i++) {
         row[i] = maximize
           ? Math.max(prev[i], prev[i + (1 << (k - 1))])
@@ -102,7 +105,14 @@ export function firstMitigationIndex(
   }
 }
 
-export function priceTrees(candles: Candle[]) {
+export interface PriceTrees {
+  lowMin: RangeExtreme;
+  highMax: RangeExtreme;
+  closeMin: RangeExtreme;
+  closeMax: RangeExtreme;
+}
+
+export function priceTrees(candles: Candle[]): PriceTrees {
   const lows: number[] = new Array(candles.length);
   const highs: number[] = new Array(candles.length);
   const closes: number[] = new Array(candles.length);
@@ -180,7 +190,7 @@ export function obInvalidated(
  * walk-forward work must use `includeMitigated: true` and respect the
  * flag per-bar, otherwise they introduce look-ahead bias.
  */
-export function detectFvg(candles: Candle[], maxZones = 8, includeMitigated = false): Zone[] {
+export function detectFvg(candles: Candle[], maxZones = 8, includeMitigated = false, prebuiltTrees?: PriceTrees): Zone[] {
   const zones: Zone[] = [];
   for (let i = 2; i < candles.length; i++) {
     const a = candles[i - 2];
@@ -212,8 +222,10 @@ export function detectFvg(candles: Candle[], maxZones = 8, includeMitigated = fa
   }
 
   // mitigation check (conservative: candle range covers the whole gap) —
-  // first-death queries over sparse tables, O(zones × log n) total
-  const trees = priceTrees(candles);
+  // first-death queries over sparse tables, O(zones × log n) total.
+  // `prebuiltTrees` lets the series-context build share ONE table set across
+  // FVG + OB scans instead of rebuilding n·log n tables per detector.
+  const trees = prebuiltTrees ?? priceTrees(candles);
   for (const z of zones) {
     if (firstMitigationIndex(z.direction === "BULLISH" ? "fvg-bull" : "fvg-bear", z, z.startIndex + 3, trees) !== -1) {
       z.mitigated = true;
@@ -246,7 +258,8 @@ export function detectOrderBlocks(
   displacementFactor = 1.2,
   maxZones = 6,
   includeMitigated = false,
-  mode: ObInvalidation = "close-mid"
+  mode: ObInvalidation = "close-mid",
+  prebuiltTrees?: PriceTrees
 ): Zone[] {
   const zones: Zone[] = [];
   const atrAt = (i: number) => (Array.isArray(atrValues) ? atrValues[i] : atrValues) ?? 0;
@@ -290,7 +303,7 @@ export function detectOrderBlocks(
 
   // invalidation: rule-configurable (default = CLOSE through the midpoint) —
   // same first-death range queries as the FVG scan (identical semantics)
-  const trees = priceTrees(candles);
+  const trees = prebuiltTrees ?? priceTrees(candles);
   for (const z of zones) {
     if (firstMitigationIndex(mode, z, z.startIndex + 2, trees) !== -1) {
       z.mitigated = true;

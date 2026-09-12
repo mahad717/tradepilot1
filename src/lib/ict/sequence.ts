@@ -467,15 +467,18 @@ export function buildSeriesContext(
   // FVG mitigation = midpoint TOUCH (zone no longer fresh — conservative).
   // OB invalidation = rule-configurable (default: CLOSE through midpoint —
   // a wick tap is the retest we trade). see zones.ts ObInvalidation.
-  const fvgZones = detectFvg(candles, 100000, true);
-  const obZones = detectOrderBlocks(candles, atrS, obDisplacementFactor, 100000, true, obInvalidation);
+  // ONE table set is shared by the FVG scan, the OB scan and the first-death
+  // loop below — at 15k bars each build is n·log2(n)×4 numbers, and building
+  // it three times per run was the deep-window memory spike.
+  const priceIdx = priceTrees(candles);
+  const fvgZones = detectFvg(candles, 100000, true, priceIdx);
+  const obZones = detectOrderBlocks(candles, atrS, obDisplacementFactor, 100000, true, obInvalidation, priceIdx);
   const zones = [...fvgZones, ...obZones];
   const zoneMitigatedAt = new Map<string, number>();
   const zoneCreatedIndex = new Map<string, number>();
   const zoneKind = new Map<string, "FVG" | "OB">();
   const zoneIndex: { zone: Zone; created: number; isFvg: boolean }[] = [];
   // first-death range queries (same indices the linear scans found, O(log n) each)
-  const priceIdx = priceTrees(candles);
   for (const z of zones) {
     const isFvg = z.id.startsWith("fvg");
     zoneKind.set(z.id, isFvg ? "FVG" : "OB");
@@ -497,10 +500,32 @@ export function buildSeriesContext(
   // precomputed lookback-3 swings for the structural target ladder
   const swingLadder = findSwings(candles, 3);
 
-  // SMT lookup: any divergence of the type within the recent window
+  // SMT lookup: any divergence of the type within the recent window.
+  // O(1) per bar via prefix arrays (most recent bullish/bearish event at or
+  // before each bar) — the previous per-bar .some() scan over all events was
+  // O(events) × 14k candidate bars ≈ 10⁸ iterations on deep windows.
   const smtEventsSorted = [...smtEvents].sort((a, b) => a.index - b.index);
-  const smtBullishAt = (i: number) => smtEventsSorted.some((e) => e.type === "BULLISH" && e.index <= i && i - e.index <= DEFAULT_CONFIG.smtWindowBars);
-  const smtBearishAt = (i: number) => smtEventsSorted.some((e) => e.type === "BEARISH" && e.index <= i && i - e.index <= DEFAULT_CONFIG.smtWindowBars);
+  const lastBullIdx = new Int32Array(candles.length).fill(-1);
+  const lastBearIdx = new Int32Array(candles.length).fill(-1);
+  {
+    let bi = -1;
+    let be = -1;
+    let k = 0;
+    for (let i = 0; i < candles.length; i++) {
+      while (k < smtEventsSorted.length && smtEventsSorted[k].index <= i) {
+        if (smtEventsSorted[k].type === "BULLISH") bi = smtEventsSorted[k].index;
+        else be = smtEventsSorted[k].index;
+        k++;
+      }
+      lastBullIdx[i] = bi;
+      lastBearIdx[i] = be;
+    }
+  }
+  const smtWindow = DEFAULT_CONFIG.smtWindowBars;
+  const smtBullishAt = (i: number) =>
+    i >= 0 && i < candles.length && lastBullIdx[i] !== -1 && i - lastBullIdx[i] <= smtWindow;
+  const smtBearishAt = (i: number) =>
+    i >= 0 && i < candles.length && lastBearIdx[i] !== -1 && i - lastBearIdx[i] <= smtWindow;
 
   // trailing dealing range (incremental window max/min)
   const win = DEFAULT_CONFIG.rangeLookbackBars;
