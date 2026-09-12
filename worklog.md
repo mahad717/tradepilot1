@@ -595,3 +595,25 @@ Stage Summary:
   backtest.ts (slimmed), market/index.ts (re-export), backtest-tab.tsx (local
   CSV runs + UX), scripts/test-client-run.mts (new), scripts/test-csv-parser
   renamed .mts. Pushed to mahad717/tradepilot1 → Cloudflare CI auto-deploys.
+
+---
+Task ID: 18
+Agent: main (Super Z)
+Task: User marked "best settings" via 5 full-page screenshots of the Backtesting tab — identify them and ship them as the product defaults.
+
+Work Log:
+- Sliced the 5 tall screenshots (1920x19484–29565) into readable chunks; pixel/color diff showed B≈C and D≈E duplicate pairs → 3 distinct runs on the SAME XAU_15m_data.csv (480,717 candles, 25k window):
+  * A "Best Settings Result": London+NY · BE+ costs · Optimistic · Midpoint +0.05R → 71 trades · 74.6% WR · PF 5.63 · maxDD 0.46R · +7.31R net · GREEN
+  * B/C: All sessions · plain BE · Pessimistic · Edge → 161 trades · 33.5% WR · PF 1.14 · +2.24R · YELLOW
+  * D/E: All sessions · plain BE · Randomized · Edge → 161 trades · 36% WR · PF 1.81 · +9.74R · GREEN
+- backtest-tab.tsx: new defaults sessions="london,ny-am,ny-pm", beMode="tp1cost", ambiguity="optimistic", entryAnchor="midpoint" (rest unchanged); added preset chip row "★ Best (verified)" / "Conservative baseline" (one-click knob sets, active-state check marks, tooltips carry the verified numbers); amber upper-bound advisory under SL/TP ambiguity when optimistic; ambiguity option added to the compare-dimension select.
+- params.ts: API fallbacks synced (beMode/ambiguity/entryAnchor/sessions defaults) + COMPARE_DIMENSIONS += "ambiguity".
+- run-core.ts + backtest.ts: new compare dimension "ambiguity" (Pessimistic/Optimistic/Randomized rows on the same window); entry plan gains 4th variant "Midpoint + 0.05R tolerance (verified best)"; run-notes line no longer calls edge the default.
+- scripts/test-best-settings.mts (new): bit-exact reproduction of the verified run with the new defaults on the real file — 71 trades · 74.6% WR · PF 5.63 · +7.31R · GREEN; ambiguity spread Pessimistic 71.8%/+6.46R vs Optimistic 74.6%/+7.31R vs Randomized 73.2%/+6.85R (only ~2.8pp — the config is robust to the ambiguity assumption). 9/9 checks.
+- scripts/test-client-run.mts: updated plan-shape checks (4 entry variants, ambiguity rows) → 34/34 pass incl. server parity POST.
+- tsc: no new errors (4 pre-existing unrelated); eslint clean on touched files; next build clean.
+- Commit 2fe58d2 pushed to mahad717/tradepilot1 main → Cloudflare git-connected auto-deploy.
+
+Stage Summary:
+- Every new backtest session now opens with the user-verified winning config; the old honest baseline is one click away, and compare → SL/TP ambiguity quantifies exactly what Optimistic assumes on any dataset. Engine internals untouched (engine default stays pessimistic; product layer picks the knobs).
+- Key insight from the sweep: with kill-zone sessions + midpoint anchor the ambiguity spread collapses to 71.8–74.6% WR (vs the wide pessimistic gap on the edge/all-session baseline), so the optimistic default is a defensible upper bound, not a flattery number.
