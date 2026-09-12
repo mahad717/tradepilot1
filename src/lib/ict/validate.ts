@@ -25,6 +25,7 @@ import { findSwings } from "./swings";
 import { smtSeries } from "./smtseries";
 import { firstMitigationIndexForTest } from "./zones";
 import { mulberry32 } from "./rng";
+import { localMinutesForTest } from "./sessions";
 
 export interface TestResult {
   name: string;
@@ -643,6 +644,53 @@ export function runAllTests(): TestResult[] {
       t
         ? `stop=${t.currentStop} (entry 100 + 0.72 RT cost / 0.5 remaining = 1.44); gross=${t.grossR}R net=${t.netR}R (plain BE would net +0.39R) — cost-dragged TP1 retraces become wins`
         : "trade did not fill"
+    );
+  }
+
+  // ---- 25. Session local-time arithmetic ≡ Intl ground truth (DST included) ----
+  {
+    // The engine computes market-local wall-clock minutes arithmetically from a
+    // per-day zone offset (workerd CPU fix). This pins that arithmetic against
+    // Intl.formatToParts ground truth across BOTH DST transitions of both
+    // zones plus random days — a misclassified kill zone is a silent edge.
+    const zones = ["Europe/London", "America/New_York"];
+    const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    const stamps: number[] = [];
+    // 2025 transitions: EU Mar 30 + Oct 26 (01:00 UTC); US Mar 9 + Nov 2 (06:00 UTC)
+    for (const base of [Date.UTC(2025, 2, 8), Date.UTC(2025, 2, 29), Date.UTC(2025, 9, 25), Date.UTC(2025, 10, 1)]) {
+      for (let m = -1440; m <= 2880; m += 15) stamps.push(base / 1000 + m * 60);
+    }
+    const rand = mulberry32(4242);
+    for (let i = 0; i < 600; i++) {
+      stamps.push(Math.floor(Date.UTC(2023, 0, 1) / 1000 + rand() * ((Date.UTC(2026, 11, 31) - Date.UTC(2023, 0, 1)) / 1000)));
+    }
+    let checked = 0;
+    let mismatches = 0;
+    let firstBad = "";
+    for (const ts of stamps) {
+      for (const zone of zones) {
+        const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hour12: false, hour: "2-digit", minute: "2-digit", weekday: "short" }).formatToParts(new Date(ts * 1000));
+        let hour = 0;
+        let minute = 0;
+        let dow = 0;
+        for (const p of parts) {
+          if (p.type === "hour") hour = Number(p.value) % 24;
+          else if (p.type === "minute") minute = Number(p.value);
+          else if (p.type === "weekday") dow = dowMap[p.value] ?? 0;
+        }
+        const truth = { minutes: hour * 60 + minute, dow };
+        const got = localMinutesForTest(ts, zone);
+        checked++;
+        if (got.minutes !== truth.minutes || got.dow !== truth.dow) {
+          mismatches++;
+          if (!firstBad) firstBad = `${new Date(ts * 1000).toISOString()} ${zone}: got ${got.minutes}/${got.dow} want ${truth.minutes}/${truth.dow}`;
+        }
+      }
+    }
+    add(
+      "Session local-time arithmetic matches Intl across DST transitions",
+      mismatches === 0 && checked > 1500,
+      `${checked} timestamp×zone probes around EU/US DST transitions + random days, ${mismatches} mismatches${firstBad ? ` (first: ${firstBad})` : ""}`
     );
   }
 

@@ -48,23 +48,58 @@ function dtfFor(timeZone: string, opts: Intl.DateTimeFormatOptions): Intl.DateTi
   return f;
 }
 
-function localMinutes(timeSec: number, timeZone: string): { minutes: number; dow: number } {
-  const parts = dtfFor(timeZone, {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    weekday: "short",
-  }).formatToParts(new Date(timeSec * 1000));
-  let hour = 0;
-  let minute = 0;
-  let dow = 0;
-  const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  for (const p of parts) {
-    if (p.type === "hour") hour = Number(p.value) % 24; // "24" can appear with hour12:false
-    else if (p.type === "minute") minute = Number(p.value);
-    else if (p.type === "weekday") dow = dowMap[p.value] ?? 0;
+// DST transition instants are RULE-DEFINED in UTC for both zones and stable
+// for decades (EU: last Sundays of March/October 01:00 UTC since 1996;
+// US: 2nd Sun March 07:00 UTC + 1st Sun November 06:00 UTC since 2007), and
+// the two possible offsets are fixed by law (GMT/BST, EST/EDT). So the offset
+// at any instant is exact pure math — no Intl in the hot path at all. The
+// self-test (validate #25) pins this against Intl ground truth across the
+// transitions; Intl remains the fallback for any zone outside the rule map.
+function lastSundayUTC(year: number, month0: number): number {
+  const lastDay = new Date(Date.UTC(year, month0 + 1, 0)); // last day of month0
+  const day = lastDay.getUTCDate() - lastDay.getUTCDay();
+  return Date.UTC(year, month0, day, 1, 0, 0) / 1000;
+}
+function nthSundayUTC(year: number, month0: number, n: number, hourUTC: number): number {
+  const first = new Date(Date.UTC(year, month0, 1));
+  const day = 1 + ((7 - first.getUTCDay()) % 7) + (n - 1) * 7;
+  return Date.UTC(year, month0, day, hourUTC, 0, 0) / 1000;
+}
+interface ZoneRule {
+  stdOffsetMin: number;
+  dstOffsetMin: number;
+  /** [spring, autumn] transition instants in UTC seconds for a year */
+  transitions: (year: number) => [number, number];
+}
+const ZONE_RULES: Record<string, ZoneRule> = {
+  "Europe/London": { stdOffsetMin: 0, dstOffsetMin: 60, transitions: (y) => [lastSundayUTC(y, 2), lastSundayUTC(y, 9)] },
+  "America/New_York": { stdOffsetMin: -300, dstOffsetMin: -240, transitions: (y) => [nthSundayUTC(y, 2, 2, 7), nthSundayUTC(y, 10, 1, 6)] },
+};
+function zoneOffsetMin(timeSec: number, zone: string): number {
+  const rule = ZONE_RULES[zone];
+  if (rule) {
+    const year = new Date(timeSec * 1000).getUTCFullYear();
+    const [spring, autumn] = rule.transitions(year);
+    return timeSec >= spring && timeSec < autumn ? rule.dstOffsetMin : rule.stdOffsetMin;
   }
-  return { minutes: hour * 60 + minute, dow };
+  return zoneOffsetAndDow(timeSec, zone).offsetMin; // non-rule fallback (memoised Intl)
+}
+
+function localMinutes(timeSec: number, timeZone: string): { minutes: number; dow: number } {
+  // Pure arithmetic (workerd CPU fix — the previous implementation called
+  // Intl.formatToParts PER BAR PER WINDOW; ~27k calls on a deep window were
+  // enough to blow the Worker CPU cap). Exact at every instant, including
+  // DST transition days — see ZONE_RULES above and self-test #25.
+  const offsetMin = zoneOffsetMin(timeSec, timeZone);
+  const localSec = timeSec + offsetMin * 60;
+  const minutes = Math.floor(localSec / 60) % 1440;
+  // local weekday from the LOCAL day number (epoch 1970-01-01 = Thursday).
+  // A per-day memo would be WRONG here: a negative offset shifts the local
+  // date across midnight inside the UTC day (NY 00:00-04:59Z is still the
+  // previous local day), so the weekday must come from the local day.
+  const localDayKey = Math.floor(localSec / 86400);
+  const dow = (((localDayKey % 7) + 7 + 4) % 7 + 7) % 7;
+  return { minutes, dow };
 }
 // Memoised offset lookup: zone+UTC-day → {offsetMin, dow}. The offset for a
 // zone can change mid-session only at DST transitions (03:00 local), and no
@@ -135,6 +170,11 @@ export function sessionKeyAt(timeSec: number): SessionKey {
 /** True when the timestamp is inside any kill zone. */
 export function isKillzone(timeSec: number): boolean {
   return sessionKeyAt(timeSec) !== "off-session";
+}
+
+/** Test hook: the arithmetic local-time path, for equivalence tests vs Intl. */
+export function localMinutesForTest(timeSec: number, timeZone: string): { minutes: number; dow: number } {
+  return localMinutes(timeSec, timeZone);
 }
 
 /** New York means the AM + PM kill zones together. */
