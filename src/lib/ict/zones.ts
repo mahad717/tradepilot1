@@ -2,6 +2,133 @@
 import type { Candle, Zone } from "./types";
 
 /**
+ * First-index range queries over a price series, answered in O(log n) via a
+ * sparse table. The mitigation scans below used to walk every candle for
+ * EVERY zone (O(zones × bars) — tens of millions of iterations on deep
+ * windows, the reason 15000-bar runs flirt with Worker CPU limits). The
+ * query replaces the linear scan: "first index ≥ from whose value satisfies
+ * the same strict/non-strict comparison" — identical result by construction
+ * (the qualifying prefix of the range-extreme is monotone), pinned by
+ * validate.ts test 23 (randomized equivalence vs the linear scan).
+ */
+class RangeExtreme {
+  private n: number;
+  private sparse: number[][] = [];
+  constructor(
+    private vals: number[],
+    private maximize: boolean
+  ) {
+    this.n = vals.length;
+    if (this.n === 0) return;
+    const levels = Math.floor(Math.log2(this.n)) + 1;
+    this.sparse = [vals.slice()];
+    for (let k = 1; k < levels; k++) {
+      const len = this.n - (1 << k) + 1;
+      const prev = this.sparse[k - 1];
+      const row = new Array<number>(len);
+      for (let i = 0; i < len; i++) {
+        row[i] = maximize
+          ? Math.max(prev[i], prev[i + (1 << (k - 1))])
+          : Math.min(prev[i], prev[i + (1 << (k - 1))]);
+      }
+      this.sparse.push(row);
+    }
+  }
+  /** range extreme of vals[l..r] in O(1) */
+  private extreme(l: number, r: number): number {
+    const span = r - l + 1;
+    const k = Math.floor(Math.log2(span));
+    const a = this.sparse[k][l];
+    const b = this.sparse[k][r - (1 << k) + 1];
+    return this.maximize ? Math.max(a, b) : Math.min(a, b);
+  }
+  /**
+   * First index ≥ `from` whose value satisfies the comparison that the
+   * equivalent linear scan would test. min-mode: `v < t` (strict) / `v <= t`;
+   * max-mode: `v > t` (strict) / `v >= t`. Returns -1 when no index qualifies.
+   */
+  first(from: number, threshold: number, strict: boolean): number {
+    if (this.n === 0 || from < 0 || from >= this.n) return -1;
+    const good = (v: number) =>
+      this.maximize
+        ? strict ? v > threshold : v >= threshold
+        : strict ? v < threshold : v <= threshold;
+    if (!good(this.extreme(from, this.n - 1))) return -1;
+    let lo = from;
+    let hi = this.n - 1;
+    let ans = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (good(this.extreme(from, mid))) {
+        ans = mid;
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    return ans;
+  }
+}
+
+/**
+ * First death index (≥ `from`) under an FVG-mitigation or OB-invalidation
+ * rule, via O(log n) range queries — the exact index the equivalent linear
+ * scan would find. Returns -1 when nothing ever kills the zone.
+ */
+export function firstMitigationIndex(
+  mode: "fvg-bull" | "fvg-bear" | ObInvalidation,
+  z: { direction: "BULLISH" | "BEARISH"; top: number; bottom: number },
+  from: number,
+  trees: { lowMin: RangeExtreme; highMax: RangeExtreme; closeMin: RangeExtreme; closeMax: RangeExtreme }
+): number {
+  const mid = (z.top + z.bottom) / 2;
+  const q = (kind: "lowMin" | "highMax" | "closeMin" | "closeMax", threshold: number, strict: boolean) =>
+    trees[kind].first(from, threshold, strict);
+  if (mode === "fvg-bull") return q("lowMin", z.bottom, false); // c.low <= bottom
+  if (mode === "fvg-bear") return q("highMax", z.top, false); // c.high >= top
+  if (z.direction === "BULLISH") {
+    switch (mode as ObInvalidation) {
+      case "wick-mid": return q("lowMin", mid, true); // c.low < mid
+      case "close-distal": return q("closeMin", z.bottom, true); // c.close < bottom
+      case "wick-distal": return q("lowMin", z.bottom, false); // c.low <= bottom
+      default: return q("closeMin", mid, true); // close-mid: c.close < mid
+    }
+  }
+  switch (mode as ObInvalidation) {
+    case "wick-mid": return q("highMax", mid, true); // c.high > mid
+    case "close-distal": return q("closeMax", z.top, true); // c.close > top
+    case "wick-distal": return q("highMax", z.top, false); // c.high >= top
+    default: return q("closeMax", mid, true); // close-mid: c.close > mid
+  }
+}
+
+export function priceTrees(candles: Candle[]) {
+  const lows: number[] = new Array(candles.length);
+  const highs: number[] = new Array(candles.length);
+  const closes: number[] = new Array(candles.length);
+  for (let i = 0; i < candles.length; i++) {
+    lows[i] = candles[i].low;
+    highs[i] = candles[i].high;
+    closes[i] = candles[i].close;
+  }
+  return {
+    lowMin: new RangeExtreme(lows, false),
+    highMax: new RangeExtreme(highs, true),
+    closeMin: new RangeExtreme(closes, false),
+    closeMax: new RangeExtreme(closes, true),
+  };
+}
+
+export function firstMitigationIndexForTest(
+  mode: "fvg-bull" | "fvg-bear" | ObInvalidation,
+  z: { direction: "BULLISH" | "BEARISH"; top: number; bottom: number },
+  candles: Candle[],
+  from: number
+): number {
+  return firstMitigationIndex(mode, z, from, priceTrees(candles));
+}
+
+/**
  * OB invalidation rule — WHEN a tapped order block stops being tradable.
  * The engine ships with the ICT close-through-midpoint rule; the other
  * modes exist so the definition itself can be COMPARED on real data
@@ -84,18 +211,12 @@ export function detectFvg(candles: Candle[], maxZones = 8, includeMitigated = fa
     }
   }
 
-  // mitigation check (conservative: candle range covers the whole gap)
+  // mitigation check (conservative: candle range covers the whole gap) —
+  // first-death queries over sparse tables, O(zones × log n) total
+  const trees = priceTrees(candles);
   for (const z of zones) {
-    for (let i = z.startIndex + 3; i < candles.length; i++) {
-      const c = candles[i];
-      if (z.direction === "BULLISH" && c.low <= z.bottom) {
-        z.mitigated = true;
-        break;
-      }
-      if (z.direction === "BEARISH" && c.high >= z.top) {
-        z.mitigated = true;
-        break;
-      }
+    if (firstMitigationIndex(z.direction === "BULLISH" ? "fvg-bull" : "fvg-bear", z, z.startIndex + 3, trees) !== -1) {
+      z.mitigated = true;
     }
   }
 
@@ -167,13 +288,12 @@ export function detectOrderBlocks(
     }
   }
 
-  // invalidation: rule-configurable (default = CLOSE through the midpoint).
+  // invalidation: rule-configurable (default = CLOSE through the midpoint) —
+  // same first-death range queries as the FVG scan (identical semantics)
+  const trees = priceTrees(candles);
   for (const z of zones) {
-    for (let i = z.startIndex + 2; i < candles.length; i++) {
-      if (obInvalidated(z, candles[i], mode)) {
-        z.mitigated = true;
-        break;
-      }
+    if (firstMitigationIndex(mode, z, z.startIndex + 2, trees) !== -1) {
+      z.mitigated = true;
     }
   }
 

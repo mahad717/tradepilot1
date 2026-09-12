@@ -23,6 +23,7 @@ import { DEFAULT_CONFIG, buildSeriesContext, buildSetupAt, type EngineConfig, ty
 import { resample, htfSecondsFor } from "./htf";
 import { findSwings } from "./swings";
 import { smtSeries } from "./smtseries";
+import { firstMitigationIndexForTest } from "./zones";
 import { mulberry32 } from "./rng";
 
 export interface TestResult {
@@ -571,6 +572,51 @@ export function runAllTests(): TestResult[] {
       "Editable cost model: override reaches accounting and the cost gate",
       pass,
       `zero → costsR ${zero.metrics.costsR} / ${zero.trades.length} trades; real → ${real.metrics.costsR}R; doubled spread → ${doubled.metrics.costsR}R (must rise); $5 spread + 0.01R gate → ${gated.trades.length} trades (expect 0)`
+    );
+  }
+
+  // ---- 23. sparse-table mitigation queries ≡ linear scans (perf refactor guard) ----
+  {
+    // randomized equivalence: for random zones/thresholds/modes, the O(log n)
+    // first-death query must return the exact index a candle-by-candle scan finds
+    const rand = mulberry32(77);
+    const rows: [number, number, number, number][] = [];
+    for (let i = 0; i < 300; i++) {
+      const o = 100 + (rand() - 0.5) * 4;
+      const drift = i * 0.01;
+      rows.push([o, o + 0.5 + rand() * 2.5, o - 0.5 - rand() * 2.5, o + (rand() - 0.5) * 2]);
+      void drift;
+    }
+    const candles = mkCandles(rows);
+    const modes = ["fvg-bull", "fvg-bear", "close-mid", "wick-mid", "close-distal", "wick-distal"] as const;
+    let checked = 0;
+    let mismatches = 0;
+    for (let trial = 0; trial < 200; trial++) {
+      const top = 98 + rand() * 6;
+      const bottom = top - (0.2 + rand() * 2);
+      const zone = { direction: rand() < 0.5 ? ("BULLISH" as const) : ("BEARISH" as const), top, bottom };
+      const mode = modes[Math.floor(rand() * modes.length)];
+      const from = Math.floor(rand() * (candles.length - 1));
+      const treeIdx = firstMitigationIndexForTest(mode, zone, candles, from);
+      let linearIdx = -1;
+      for (let i = from; i < candles.length; i++) {
+        const c = candles[i];
+        const mid = (zone.top + zone.bottom) / 2;
+        const dead =
+          mode === "fvg-bull" ? c.low <= zone.bottom :
+          mode === "fvg-bear" ? c.high >= zone.top :
+          zone.direction === "BULLISH"
+            ? (mode === "wick-mid" ? c.low < mid : mode === "close-distal" ? c.close < zone.bottom : mode === "wick-distal" ? c.low <= zone.bottom : c.close < mid)
+            : (mode === "wick-mid" ? c.high > mid : mode === "close-distal" ? c.close > zone.top : mode === "wick-distal" ? c.high >= zone.top : c.close > mid);
+        if (dead) { linearIdx = i; break; }
+      }
+      checked++;
+      if (treeIdx !== linearIdx) mismatches++;
+    }
+    add(
+      "Mitigation range-queries match linear scans exactly",
+      mismatches === 0 && checked === 200,
+      `${checked} randomized zone/threshold/mode trials, ${mismatches} mismatches`
     );
   }
 

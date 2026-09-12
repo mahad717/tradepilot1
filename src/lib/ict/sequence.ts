@@ -52,7 +52,7 @@ import type {
 } from "./types";
 import { detectSweeps, detectLiquidityPools } from "./liquidity";
 import { findSwings } from "./swings";
-import { detectFvg, detectOrderBlocks, obInvalidated, type ObInvalidation } from "./zones";
+import { detectFvg, detectOrderBlocks, obInvalidated, firstMitigationIndex, priceTrees, type ObInvalidation } from "./zones";
 import { roundTripCostR, DEFAULT_COSTS } from "./costs";
 import { structureWalkSeries } from "./structure";
 import { atrSeries, volRegimeSeries } from "./volatility";
@@ -469,27 +469,21 @@ export function buildSeriesContext(
   const zoneCreatedIndex = new Map<string, number>();
   const zoneKind = new Map<string, "FVG" | "OB">();
   const zoneIndex: { zone: Zone; created: number; isFvg: boolean }[] = [];
+  // first-death range queries (same indices the linear scans found, O(log n) each)
+  const priceIdx = priceTrees(candles);
   for (const z of zones) {
     const isFvg = z.id.startsWith("fvg");
     zoneKind.set(z.id, isFvg ? "FVG" : "OB");
     const created = isFvg ? fvgCreatedIndex(z) : obCreatedIndex(z);
     zoneCreatedIndex.set(z.id, created);
     zoneIndex.push({ zone: z, created, isFvg });
-    const mid = (z.top + z.bottom) / 2;
-    for (let i = z.startIndex + (isFvg ? 3 : 2); i < candles.length; i++) {
-      const c = candles[i];
-      if (isFvg) {
-        // FVG: midpoint TOUCH already consumes freshness (unchanged by the OB rule)
-        const dead = z.direction === "BULLISH" ? c.low <= mid : c.high >= mid;
-        if (dead) {
-          zoneMitigatedAt.set(z.id, i);
-          break;
-        }
-      } else if (obInvalidated(z, c, obInvalidation)) {
-        zoneMitigatedAt.set(z.id, i);
-        break;
-      }
-    }
+    const deathAt = firstMitigationIndex(
+      isFvg ? (z.direction === "BULLISH" ? "fvg-bull" : "fvg-bear") : obInvalidation,
+      z,
+      z.startIndex + (isFvg ? 3 : 2),
+      priceIdx
+    );
+    if (deathAt !== -1) zoneMitigatedAt.set(z.id, deathAt);
   }
   zoneIndex.sort((a, b) => a.created - b.created);
 
