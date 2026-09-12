@@ -3,8 +3,9 @@
 // Bias controls (verified by the self-test suite, spec #36):
 //  - NO look-ahead: setups decided on bar close i; orders fill from i+1;
 //    HTF bias uses only CLOSED HTF candles; swings used only when confirmed.
-//  - Same-candle SL/TP ambiguity: pessimistic by default (stop first),
-//    optional optimistic / seeded-random / lower-timeframe resolution.
+//  - Same-candle SL/TP ambiguity: the ENGINE defaults pessimistic (stop
+//    first); the product layer (UI/params) ships optimistic after the
+//    user-verified sweep — compare → ambiguity quantifies the gap.
 //  - Costs separated: spread + slippage + commission, attributed per leg.
 //  - Results reported in net R against the INITIAL risk of each trade.
 //
@@ -249,8 +250,19 @@ export async function compareDimension(
   if (dimension === "entry") {
     const rows = await Promise.all([
       run("Edge + strict", "limit at the proximal edge, no tolerance (honest-touch baseline)", { entryAnchor: "edge", entryToleranceR: 0 }),
-      run("Edge + 0.05R tolerance", "marketable last-look within 0.05R of the edge limit (current default)", { entryAnchor: "edge", entryToleranceR: 0.05 }),
+      run("Edge + 0.05R tolerance", "marketable last-look within 0.05R of the edge limit", { entryAnchor: "edge", entryToleranceR: 0.05 }),
       run("Midpoint + strict", "limit at the zone midpoint — deeper fill, worse location", { entryAnchor: "midpoint", entryToleranceR: 0 }),
+      run("Midpoint + 0.05R tolerance", "marketable last-look around the midpoint limit (verified best on XAU 15m)", { entryAnchor: "midpoint", entryToleranceR: 0.05 }),
+    ]);
+    return { dimension, rows };
+  }
+  if (dimension === "ambiguity") {
+    // SL/TP same-bar conflict sweep: lower bound vs upper bound vs seeded
+    // 50/50 — quantifies exactly what the optimistic default assumes.
+    const rows = await Promise.all([
+      run("Pessimistic", "conflict resolves to the STOP — lower-bound win rate", { ambiguity: "pessimistic" }),
+      run("Optimistic", "conflict resolves to the TARGET — upper-bound win rate (verified best)", { ambiguity: "optimistic" }),
+      run("Randomized", "seeded 50/50 per conflict — expected honest read in between", { ambiguity: "randomized" }),
     ]);
     return { dimension, rows };
   }

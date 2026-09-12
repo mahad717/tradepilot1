@@ -10,7 +10,7 @@ export const BE_MODES = ["off", "tp1", "tp1cost", "risk1", "structural"];
 export const AMBIGUITY_MODES = ["pessimistic", "optimistic", "randomized", "ltf"];
 export const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
 export const STRICTNESS_LEVELS = ["conservative", "balanced", "aggressive"];
-export const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "be", "obInvalidation", "obDisplacement"];
+export const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "be", "obInvalidation", "obDisplacement", "ambiguity"];
 export const OB_INVALIDATION_MODES = ["close-mid", "wick-mid", "close-distal", "wick-distal"];
 export const DEBUG_STAGES = ["fetch", "smt", "core"];
 
@@ -65,12 +65,13 @@ export function parseBacktestParams(
   const intervalRaw = searchParams.get("interval") ?? "15min";
   const bars = Number(searchParams.get("bars") ?? 1500);
   const minRR = Number(searchParams.get("minRR") ?? 2.0);
-  const beMode = searchParams.get("beMode") ?? "tp1";
-  const ambiguity = searchParams.get("ambiguity") ?? "pessimistic";
+  const beMode = searchParams.get("beMode") ?? "tp1cost";
+  const ambiguity = searchParams.get("ambiguity") ?? "optimistic";
   const seed = Number(searchParams.get("seed") ?? 42);
-  const sessionsParam = searchParams.get("sessions") ?? "";
+  // default session filter = London + NY kill zones (verified best config)
+  const sessionsParam = searchParams.get("sessions") ?? "london,ny-am,ny-pm";
   const strictnessParam = searchParams.get("strictness") ?? "balanced";
-  const entryAnchorParam = searchParams.get("entryAnchor") ?? "edge";
+  const entryAnchorParam = searchParams.get("entryAnchor") ?? "midpoint";
   const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0.05");
   const costGateParam = Number(searchParams.get("costGate") ?? "0.35");
   const horizonParam = Number(searchParams.get("horizon") ?? "8");
@@ -104,7 +105,7 @@ export function parseBacktestParams(
   if (!AMBIGUITY_MODES.includes(ambiguity)) return { ok: false, error: "Unknown ambiguity model" };
   if (!STRICTNESS_LEVELS.includes(strictnessParam)) return { ok: false, error: "Unknown strictness preset" };
   if (!COMPARE_DIMENSIONS.includes(compareDimParam)) {
-    return { ok: false, error: "Unknown compareDim (strictness|expiry|sessions|entry|be|obInvalidation)" };
+    return { ok: false, error: "Unknown compareDim (strictness|expiry|sessions|entry|be|obInvalidation|obDisplacement|ambiguity)" };
   }
   if (!OB_INVALIDATION_MODES.includes(obInvalidationParam)) {
     return { ok: false, error: "obInvalidation must be close-mid|wick-mid|close-distal|wick-distal" };

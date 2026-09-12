@@ -266,10 +266,15 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const { accessToken, user } = useAuth();
   const [bars, setBars] = useState(1500);
   const [btInterval, setBtInterval] = useState(interval === "5min" ? "15min" : interval);
+  // defaults = the user-verified BEST config (XAUUSD 15m CSV, 480k candles,
+  // 25k-bar window: 71 trades · 74.6% WR · PF 5.63 · maxDD 0.46R · +7.31R net,
+  // GREEN robustness) — verified against pessimistic/edge/all-session baselines
+  // (33.5% WR) and randomized (36% WR) on identical data. Restore via the
+  // "★ Best (verified)" preset chip below.
   const [minRR, setMinRR] = useState("2");
-  const [beMode, setBeMode] = useState("tp1");
-  const [ambiguity, setAmbiguity] = useState("pessimistic");
-  const [entryAnchor, setEntryAnchor] = useState("edge");
+  const [beMode, setBeMode] = useState("tp1cost");
+  const [ambiguity, setAmbiguity] = useState("optimistic");
+  const [entryAnchor, setEntryAnchor] = useState("midpoint");
   const [entryTolerance, setEntryTolerance] = useState("0.05");
   const [costGate, setCostGate] = useState("0.35");
   const [obInvalidation, setObInvalidation] = useState("close-mid");
@@ -278,7 +283,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [slip, setSlip] = useState("");
   const [commBp, setCommBp] = useState("");
   const [tierB, setTierB] = useState("70");
-  const [sessions, setSessions] = useState("");
+  const [sessions, setSessions] = useState("london,ny-am,ny-pm");
   const [strictness, setStrictness] = useState("balanced");
   const [sensitivity, setSensitivity] = useState(false);
   const [compare, setCompare] = useState(false);
@@ -530,10 +535,69 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         : "border-amber-900/50 bg-amber-950/30 text-amber-300";
   const maxFunnel = result ? Math.max(1, ...result.funnel.map((f) => f.count)) : 1;
 
+  // Named knob sets — "Best" is the user-verified config on XAUUSD 15m
+  // (480k-candle CSV, 25k window): 71 trades · 74.6% WR · PF 5.63 · +7.31R.
+  // "Baseline" is the conservative read of the SAME data (pessimistic
+  // ambiguity, edge fills, all sessions): 161 trades · 33.5% WR · +2.24R.
+  const PRESETS: Record<string, { label: string; title: string; values: Record<string, string> }> = {
+    best: {
+      label: "★ Best (verified)",
+      title: "User-verified on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.05R tolerance — 71 trades, 74.6% WR, PF 5.63, maxDD 0.46R, +7.31R net (GREEN).",
+      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.05", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+    },
+    baseline: {
+      label: "Conservative baseline",
+      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 161 trades, 33.5% WR, PF 1.14, maxDD 6.34R, +2.24R net (YELLOW). Use it as the lower bound.",
+      values: { sessions: "", beMode: "tp1", ambiguity: "pessimistic", entryAnchor: "edge", entryTolerance: "0.05", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+    },
+  };
+  function applyPreset(p: { values: Record<string, string> }) {
+    const v = p.values;
+    if (v.sessions !== undefined) setSessions(v.sessions);
+    if (v.beMode !== undefined) setBeMode(v.beMode);
+    if (v.ambiguity !== undefined) setAmbiguity(v.ambiguity);
+    if (v.entryAnchor !== undefined) setEntryAnchor(v.entryAnchor);
+    if (v.entryTolerance !== undefined) setEntryTolerance(v.entryTolerance);
+    if (v.costGate !== undefined) setCostGate(v.costGate);
+    if (v.minRR !== undefined) setMinRR(v.minRR);
+    if (v.tierB !== undefined) setTierB(v.tierB);
+    if (v.obDisp !== undefined) setObDisp(v.obDisp);
+    if (v.obInvalidation !== undefined) setObInvalidation(v.obInvalidation);
+    if (v.strictness !== undefined) setStrictness(v.strictness);
+  }
+  const onBest =
+    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint";
+  const onBaseline = sessions === "" && beMode === "tp1" && ambiguity === "pessimistic" && entryAnchor === "edge";
+
   return (
     <div className="space-y-6">
       {/* ---------------- config ---------------- */}
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Settings presets">
+          <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Presets</span>
+          {Object.entries(PRESETS).map(([key, p]) => {
+            const active = key === "best" ? onBest : onBaseline;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => applyPreset(p)}
+                title={p.title}
+                className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                  active
+                    ? "border-[rgba(224,164,48,0.6)] bg-[rgba(224,164,48,0.12)] text-gold"
+                    : "border-border bg-card text-muted-foreground hover:border-[rgba(224,164,48,0.4)] hover:text-gold"
+                }`}
+              >
+                {p.label}{active ? " ✓" : ""}
+              </button>
+            );
+          })}
+          <span className="text-[11px] text-muted-foreground">
+            Best = the verified winner on XAU 15m · Baseline = the conservative lower bound on the same data
+          </span>
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
         <div>
           <label htmlFor="bt-src" className="mb-1 block text-xs text-muted-foreground" title="Live API fetches TwelveData history; CSV runs the engine entirely on an uploaded candle file — no API credits, no fetch shortfall.">Data source</label>
           <select id="bt-src" value={dataSource} onChange={(e) => setDataSource(e.target.value as "api" | "csv")} className={selectCls}>
@@ -611,11 +675,16 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         <div>
           <label htmlFor="bt-amb" className="mb-1 block text-xs text-muted-foreground">SL/TP ambiguity</label>
           <select id="bt-amb" value={ambiguity} onChange={(e) => setAmbiguity(e.target.value)} className={selectCls}>
+            <option value="optimistic">Optimistic (verified best)</option>
             <option value="pessimistic">Pessimistic</option>
-            <option value="optimistic">Optimistic</option>
             <option value="randomized">Randomized</option>
             <option value="ltf">5m resolution (15m only)</option>
           </select>
+          {ambiguity === "optimistic" && (
+            <p className="mt-1 text-[10px] leading-snug text-amber-300/90" title="When one candle touches both the stop and the target, Optimistic credits the target. Real fills are usually in between — run compare → SL/TP ambiguity for the pessimistic/randomized spread on the same data.">
+              Upper-bound read: same-candle SL+TP conflicts credit the target. Check compare → SL/TP ambiguity for the honest spread.
+            </p>
+          )}
         </div>
         <div>
           <label htmlFor="bt-anchor" className="mb-1 block text-xs text-muted-foreground" title="Proximal edge = ICT default. Midpoint = deeper limit, more fills, worse location.">Entry anchor</label>
@@ -698,6 +767,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               <option value="be">Breakeven rule (BE+ vs plain vs risk1 vs structural)</option>
               <option value="obInvalidation">OB invalidation rule (4 modes)</option>
               <option value="obDisplacement">OB displacement factor (0.8–1.5)</option>
+              <option value="ambiguity">SL/TP ambiguity (pessimistic vs optimistic vs randomized)</option>
             </select>
           </div>
         )}
@@ -712,7 +782,8 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         {result && user && (
           <Button variant="outline" className="h-9 border-border" onClick={saveRun}>Save run</Button>
         )}
-      </div>
+        </div>{/* /config grid */}
+      </div>{/* /config section */}
       {loading && runStage && (
         <p className="rounded-lg border border-[rgba(224,164,48,0.35)] bg-[rgba(224,164,48,0.06)] px-4 py-2 text-xs text-gold" role="status">{runStage}</p>
       )}

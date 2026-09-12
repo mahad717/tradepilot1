@@ -347,7 +347,7 @@ export function runBacktestCore(
     cfg.maxCostPctOfR > 0
       ? `Execution-cost gate: ON — setups whose estimated round-trip cost exceeds ${(cfg.maxCostPctOfR * 100).toFixed(0)}% of 1R are declined (${ctx.diag.costRejected} rejected at the gate).`
       : "Execution-cost gate: OFF — every setup is evaluated regardless of its cost share of 1R.",
-    `Entry: limit at the zone ${cfg.entryAnchor === "midpoint" ? "MIDPOINT (deeper fill, worse location)" : "proximal EDGE (ICT default)"}${cfg.entryToleranceR > 0 ? `, tolerance +${cfg.entryToleranceR}R (marketable last-look)` : ", strict touch (no tolerance)"}.`,
+    `Entry: limit at the zone ${cfg.entryAnchor === "midpoint" ? "MIDPOINT (deeper fill — verified-best anchor)" : "proximal EDGE (honest-touch baseline)"}${cfg.entryToleranceR > 0 ? `, tolerance +${cfg.entryToleranceR}R (marketable last-look)` : ", strict touch (no tolerance)"}.`,
     `OB invalidation rule: ${cfg.obInvalidation}; creation threshold: displacement body ≥ ${cfg.obDisplacementFactor} × per-bar ATR — the compare dimensions obInvalidation and obDisplacement scan both sides of the OB definition on the same data.`,
     `Target horizon: execution ladder capped at ${cfg.targetHorizonR}R — farther structural levels are landmarks for the RR landmark view, not tradable targets.`,
     `Same-candle SL/TP ambiguity: ${cfg.ambiguity} model. Pessimistic assumes the stop fills first.`,
@@ -774,7 +774,7 @@ export interface StrictnessComparisonRow {
   modelBreakdown: { model: string; trades: number; expectancyR: number | null }[];
 }
 
-export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry" | "be" | "obInvalidation" | "obDisplacement";
+export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry" | "be" | "obInvalidation" | "obDisplacement" | "ambiguity";
 
 export interface DimensionRow {
   label: string;
@@ -870,8 +870,19 @@ export function dimensionPlan(dim: Exclude<CompareDimension, "strictness">): { l
   if (dim === "entry") {
     return [
       { label: "Edge + strict", description: "limit at the proximal edge, no tolerance (honest-touch baseline)", over: { entryAnchor: "edge", entryToleranceR: 0 } },
-      { label: "Edge + 0.05R tolerance", description: "marketable last-look within 0.05R of the edge limit (current default)", over: { entryAnchor: "edge", entryToleranceR: 0.05 } },
+      { label: "Edge + 0.05R tolerance", description: "marketable last-look within 0.05R of the edge limit", over: { entryAnchor: "edge", entryToleranceR: 0.05 } },
       { label: "Midpoint + strict", description: "limit at the zone midpoint — deeper fill, worse location", over: { entryAnchor: "midpoint", entryToleranceR: 0 } },
+      { label: "Midpoint + 0.05R tolerance", description: "marketable last-look around the midpoint limit (verified best on XAU 15m)", over: { entryAnchor: "midpoint", entryToleranceR: 0.05 } },
+    ];
+  }
+  if (dim === "ambiguity") {
+    // The SL/TP same-bar conflict sweep — which side of an ambiguous candle
+    // wins. Pessimistic = lower bound, Optimistic = upper bound, Randomized
+    // = seeded 50/50 (the expected honest read in between).
+    return [
+      { label: "Pessimistic", description: "conflict resolves to the STOP — lower-bound win rate", over: { ambiguity: "pessimistic" } },
+      { label: "Optimistic", description: "conflict resolves to the TARGET — upper-bound win rate (verified best)", over: { ambiguity: "optimistic" } },
+      { label: "Randomized", description: "seeded 50/50 per conflict — expected honest read in between", over: { ambiguity: "randomized" } },
     ];
   }
   if (dim === "be") {
