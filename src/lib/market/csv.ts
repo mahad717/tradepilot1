@@ -170,16 +170,27 @@ export function parseCsvDate(rawCell: string): number | null {
   return null;
 }
 
-/** Parse one price cell: strips quotes, comma thousands separators, spaces; "-" → null. */
-function parseCsvPrice(rawCell: string): number | null {
-  const cell = rawCell.trim().replace(/^"|"$/g, "").replace(/,/g, "").replace(/\s+/g, "");
+/**
+ * Parse one price cell: strips quotes, spaces; "-"/"n/a" → null.
+ * Default: commas are thousands separators ("4,348.72" → 4348.72).
+ * euroDecimals (semicolon exports): a comma inside the cell is the DECIMAL
+ * separator ("384,30" → 384.30, "4.348,72" → 4348.72) — cells without a
+ * comma keep dot-decimals ("384.3" → 384.3) so mixed exports stay safe.
+ */
+function parseCsvPrice(rawCell: string, euroDecimals = false): number | null {
+  let cell = rawCell.trim().replace(/^"|"$/g, "").replace(/\s+/g, "");
   if (cell === "" || cell === "-" || cell === "n/a" || cell === "N/A") return null;
+  if (euroDecimals && cell.includes(",")) {
+    cell = cell.replace(/\./g, "").replace(",", ".");
+  } else {
+    cell = cell.replace(/,/g, "");
+  }
   const n = Number(cell);
   return Number.isFinite(n) ? n : null;
 }
 
-/** Split one CSV line honoring double-quoted fields (commas inside quotes are literal). */
-function splitCsvLine(line: string): string[] {
+/** Split one CSV line honoring the active delimiter and double-quoted fields. */
+function splitCsvLine(line: string, delim: string): string[] {
   const out: string[] = [];
   let cur = "";
   let inQuotes = false;
@@ -192,7 +203,7 @@ function splitCsvLine(line: string): string[] {
       } else {
         inQuotes = !inQuotes;
       }
-    } else if (ch === "," && !inQuotes) {
+    } else if (ch === delim && !inQuotes) {
       out.push(cur);
       cur = "";
     } else {
@@ -201,6 +212,33 @@ function splitCsvLine(line: string): string[] {
   }
   out.push(cur);
   return out;
+}
+
+/**
+ * Detect the field delimiter from one line — comma (Investing.com and generic
+ * exports), semicolon (Dukascopy and several European exports) or TAB. Quoted
+ * fields can contain any character, so a raw count on the first line is a
+ * reliable vote: the true separator always separates the header cells.
+ */
+function detectDelimiter(line: string): "," | ";" | "\t" {
+  let commas = 0;
+  let semis = 0;
+  let tabs = 0;
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (!inQuotes) {
+      if (ch === ",") commas++;
+      else if (ch === ";") semis++;
+      else if (ch === "\t") tabs++;
+    }
+  }
+  const max = Math.max(commas, semis, tabs);
+  if (max === 0) return ",";
+  if (max === semis) return ";";
+  if (max === tabs) return "\t";
+  return ",";
 }
 
 function normalizeHeader(h: string): string {
@@ -241,10 +279,11 @@ export function parseCsvCandles(raw: string): CsvParseResult {
   }
 
   // ----- locate the header row and column mapping -----
+  const delim = detectDelimiter(lines[0]);
   let headerLine = -1;
   let roles: (ColumnRole | null)[] = [];
   let positional = false; // headerless time,open,high,low,close[,volume]
-  const firstCells = splitCsvLine(lines[0]);
+  const firstCells = splitCsvLine(lines[0], delim);
   const firstIsData = parseCsvDate(firstCells[0]) !== null && firstCells.slice(1, 5).filter(isNumeric).length >= 4;
   if (firstIsData) {
     positional = true;
@@ -252,12 +291,13 @@ export function parseCsvCandles(raw: string): CsvParseResult {
     summary.format = "headerless OHLC";
   } else {
     headerLine = 0;
-    const headers = splitCsvLine(lines[0]);
+    const headers = splitCsvLine(lines[0], delim);
     summary.headers = headers.map((h) => h.trim());
     roles = headers.map(roleFor);
     const found = roles.filter(Boolean).length;
     if (found >= 5 && roles.includes("date")) {
-      summary.format = summary.headers.some((h) => normalizeHeader(h) === "price") ? "Investing.com export" : "generic OHLC";
+      const base = summary.headers.some((h) => normalizeHeader(h) === "price") ? "Investing.com export" : "generic OHLC";
+      summary.format = delim === "," ? base : `${base} (${delim === ";" ? "semicolon" : "tab"}-separated)`;
     } else {
       // recognized too few columns — try the positional fallback anyway
       positional = true;
@@ -277,7 +317,7 @@ export function parseCsvCandles(raw: string): CsvParseResult {
   let badDate = 0;
   let badPrice = 0;
   for (const line of dataLines) {
-    const cells = splitCsvLine(line);
+    const cells = splitCsvLine(line, delim);
     const pick = (role: ColumnRole): string | null => {
       if (positional) {
         const idx = ["date", "open", "high", "low", "close"].indexOf(role);
@@ -292,10 +332,11 @@ export function parseCsvCandles(raw: string): CsvParseResult {
       summary.skipped++;
       continue;
     }
-    const o = parseCsvPrice(pick("open") ?? "");
-    const h = parseCsvPrice(pick("high") ?? "");
-    const l = parseCsvPrice(pick("low") ?? "");
-    const c = parseCsvPrice(pick("close") ?? "");
+    const euro = delim === ";";
+    const o = parseCsvPrice(pick("open") ?? "", euro);
+    const h = parseCsvPrice(pick("high") ?? "", euro);
+    const l = parseCsvPrice(pick("low") ?? "", euro);
+    const c = parseCsvPrice(pick("close") ?? "", euro);
     if (o === null || h === null || l === null || c === null) {
       badPrice++;
       summary.skipped++;

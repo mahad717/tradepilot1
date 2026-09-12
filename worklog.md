@@ -480,3 +480,44 @@ Stage Summary:
   and deploy tradepilot1.gabeyre80.workers.dev automatically.
 - Security note recorded: the token was shared in chat — recommend the user rotate it
   once convenient; rotation requires updating the origin URL again.
+
+---
+Task ID: 17
+Agent: Super Z (main agent)
+Task: "The backtest refuses this data" — user uploaded XAU_15m_data.csv, a 24.9 MB
+Dukascopy export (Date;Open;High;Low;Close;Volume, semicolon-delimited, dotted
+datetimes YYYY.MM.DD HH:MM, 480,717 bars of 15m XAUUSD, 2004-06-11 → 2025-09-30).
+
+Work Log:
+- Root cause: the parser only split on commas → every semicolon row became ONE cell;
+  the date prefix parsed but OHLC picks returned null → 0 candles → refusal. Also
+  noted: data is continuous through 2025-07-11 then jumps to 2 stray bars on
+  2025-09-30 (gap correctly surfaced by the data-quality audit, largest 7758 bars).
+- csv.ts delimiter support: detectDelimiter() votes comma/semicolon/TAB on the first
+  line (quote-aware count); splitCsvLine takes the delimiter; format label gains a
+  "(semicolon-separated)" suffix for non-comma files. parseCsvPrice gains euroDecimals
+  mode for semicolon exports — a comma inside the cell is the DECIMAL separator
+  ("384,30" → 384.30, "4.348,72" → 4348.72) while comma-free cells keep dot decimals,
+  so mixed exports stay safe.
+- Sandbox reset lost scripts/test-csv-parser.ts (gitignored .ts scripts wiped; JSON
+  artifacts + uploads + src edits survived; the sync commit fc3ca0e had captured the
+  Task-16 worklog). Test suite recreated and EXTENDED: Dukascopy fixture, euro-decimal
+  fixture, and the real 480k-row upload. Suite: 78 checks, ALL PASS — real file parses
+  in ~1.6s, 0 skipped, 15min detected, granularity intraday, first close 384.3
+  (Jun 2004), last close 3843.8 (Sep 2025), OHLC valid throughout.
+- LIVE RUN (dev, POST /api/backtest/csv, 24.9 MB body): HTTP 200 in 5.8s. 480,717
+  candles parsed → engine runs the most recent 25,000 (2024-05-03 → 2025-09-30):
+  161 trades, 33.5% WR, +0.01R expectancy, +2.24R net, PF 1.14, DD 6.34R; fetch
+  shortfall structurally 0; SMT honestly disabled (uploaded CSV); compact payload
+  complete (flags YELLOW — WF periods −1.61/−2.25/+3.89/+1.79/+0.42; sample STRONGER
+  100+); data-quality note names the 228 unexpected gaps incl. the Jul→Sep 2025 hole.
+  Selftest endpoint 25/25; tsc + eslint clean on touched files.
+- Note: 33.5% WR on this window is an honest result on NEW data (different period +
+  25k-bar window vs the TwelveData 15k deep runs) — a data-source change, not an
+  engine change; the WR-without-count-loss work continues on top of this source.
+
+Stage Summary:
+- The user's 21-year Dukascopy history now runs end-to-end: no TwelveData, no API
+  credits, no fetch shortfall, first REAL intraday backtest on uploaded data.
+- Committed + pushed to mahad717/tradepilot1 (Cloudflare CI deploys). The engine now
+  has 21 years of headroom — user can explore older windows by trimming the file.
