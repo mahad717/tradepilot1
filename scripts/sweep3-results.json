@@ -1,0 +1,366 @@
+{
+  "baseline": {
+    "W1": {
+      "name": "W1 tail (production)",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.23,
+      "pf": 5.68,
+      "dd": 1.3
+    },
+    "W2": {
+      "name": "W2 mid",
+      "trades": 137,
+      "wr": 33.6,
+      "net": 1.74,
+      "pf": 1.19,
+      "dd": 4.28
+    },
+    "W3": {
+      "name": "W3 old",
+      "trades": 160,
+      "wr": 40,
+      "net": 2.24,
+      "pf": 1.19,
+      "dd": 3.59
+    }
+  },
+  "phase1": [
+    {
+      "name": "horizon 10",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.98,
+      "pf": 5.79,
+      "dd": 1.3
+    },
+    {
+      "name": "horizon 14",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 28.66,
+      "pf": 5.3,
+      "dd": 1.3
+    },
+    {
+      "name": "horizon 16",
+      "trades": 193,
+      "wr": 71.5,
+      "net": 27.69,
+      "pf": 5.15,
+      "dd": 1.3
+    },
+    {
+      "name": "partials 30/35/35",
+      "trades": 192,
+      "wr": 74.5,
+      "net": 35.74,
+      "pf": 6.77,
+      "dd": 1.29
+    },
+    {
+      "name": "partials 35/35/30",
+      "trades": 192,
+      "wr": 75,
+      "net": 33.15,
+      "pf": 6.29,
+      "dd": 1.29
+    },
+    {
+      "name": "partials 25/25/50",
+      "trades": 191,
+      "wr": 72.8,
+      "net": 36.61,
+      "pf": 6.12,
+      "dd": 1.32
+    },
+    {
+      "name": "partials 50/25/25",
+      "trades": 194,
+      "wr": 67.5,
+      "net": 23.65,
+      "pf": 4.31,
+      "dd": 1.32
+    },
+    {
+      "name": "partials 40/40/20",
+      "trades": 194,
+      "wr": 74.2,
+      "net": 26.87,
+      "pf": 5.49,
+      "dd": 1.29
+    },
+    {
+      "name": "partials 30/30/40",
+      "trades": 192,
+      "wr": 74,
+      "net": 35.75,
+      "pf": 6.45,
+      "dd": 1.3
+    },
+    {
+      "name": "tol 0.2",
+      "trades": 207,
+      "wr": 77.3,
+      "net": 36.62,
+      "pf": 7.19,
+      "dd": 1.29
+    },
+    {
+      "name": "tol 0.25",
+      "trades": 209,
+      "wr": 79.9,
+      "net": 37.61,
+      "pf": 9.73,
+      "dd": 1.12
+    },
+    {
+      "name": "tol 0.1",
+      "trades": 181,
+      "wr": 67.4,
+      "net": 28.31,
+      "pf": 4.96,
+      "dd": 1.34
+    },
+    {
+      "name": "expiry 36",
+      "trades": 193,
+      "wr": 72,
+      "net": 31.22,
+      "pf": 5.74,
+      "dd": 1.3
+    },
+    {
+      "name": "expiry 48",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 28.54,
+      "pf": 5.31,
+      "dd": 1.4
+    },
+    {
+      "name": "expiry 18",
+      "trades": 186,
+      "wr": 71,
+      "net": 26.69,
+      "pf": 5.04,
+      "dd": 1.29
+    },
+    {
+      "name": "tierB 65",
+      "trades": 196,
+      "wr": 71.9,
+      "net": 31.74,
+      "pf": 5.76,
+      "dd": 1.3
+    },
+    {
+      "name": "tierB 75",
+      "trades": 189,
+      "wr": 70.9,
+      "net": 30.84,
+      "pf": 5.62,
+      "dd": 1.3
+    },
+    {
+      "name": "tierB 60",
+      "trades": 196,
+      "wr": 71.9,
+      "net": 31.74,
+      "pf": 5.76,
+      "dd": 1.3
+    },
+    {
+      "name": "costGate 0.30",
+      "trades": 181,
+      "wr": 72.9,
+      "net": 27.54,
+      "pf": 5.47,
+      "dd": 1.38
+    },
+    {
+      "name": "costGate 0.40",
+      "trades": 199,
+      "wr": 70.9,
+      "net": 32.86,
+      "pf": 5.51,
+      "dd": 1.3
+    },
+    {
+      "name": "costGate 0.45",
+      "trades": 206,
+      "wr": 69.4,
+      "net": 38.38,
+      "pf": 5.61,
+      "dd": 1.3
+    },
+    {
+      "name": "minRR 1.5",
+      "trades": 197,
+      "wr": 72.1,
+      "net": 31.43,
+      "pf": 5.71,
+      "dd": 1.3
+    },
+    {
+      "name": "minRR 1.75",
+      "trades": 195,
+      "wr": 71.8,
+      "net": 31.28,
+      "pf": 5.69,
+      "dd": 1.3
+    },
+    {
+      "name": "cooldown 6",
+      "trades": 195,
+      "wr": 71.3,
+      "net": 33.04,
+      "pf": 5.95,
+      "dd": 1.3
+    },
+    {
+      "name": "cooldown 8",
+      "trades": 195,
+      "wr": 71.8,
+      "net": 36.53,
+      "pf": 6.48,
+      "dd": 1.3
+    },
+    {
+      "name": "sweepAge 6",
+      "trades": 193,
+      "wr": 71,
+      "net": 30.95,
+      "pf": 5.54,
+      "dd": 1.3
+    },
+    {
+      "name": "sweepAge 10",
+      "trades": 195,
+      "wr": 71.3,
+      "net": 30.55,
+      "pf": 4.9,
+      "dd": 1.3
+    },
+    {
+      "name": "structAge 10",
+      "trades": 199,
+      "wr": 70.4,
+      "net": 25.54,
+      "pf": 4.63,
+      "dd": 1.3
+    },
+    {
+      "name": "structAge 18",
+      "trades": 176,
+      "wr": 71,
+      "net": 25.66,
+      "pf": 4.85,
+      "dd": 1.58
+    },
+    {
+      "name": "sweepQ 0.30",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.23,
+      "pf": 5.68,
+      "dd": 1.3
+    },
+    {
+      "name": "sweepQ 0.40",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.23,
+      "pf": 5.68,
+      "dd": 1.3
+    },
+    {
+      "name": "dispQ 0.40",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.23,
+      "pf": 5.68,
+      "dd": 1.3
+    },
+    {
+      "name": "dispQ 0.50",
+      "trades": 190,
+      "wr": 71.1,
+      "net": 29.82,
+      "pf": 5.47,
+      "dd": 1.3
+    },
+    {
+      "name": "zoneQ 0.35",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.23,
+      "pf": 5.68,
+      "dd": 1.3
+    },
+    {
+      "name": "zoneQ 0.45",
+      "trades": 193,
+      "wr": 72,
+      "net": 31.63,
+      "pf": 5.91,
+      "dd": 1.3
+    },
+    {
+      "name": "minStopAtr 0.25",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.23,
+      "pf": 5.68,
+      "dd": 1.3
+    },
+    {
+      "name": "minStopAtr 0.35",
+      "trades": 195,
+      "wr": 71.8,
+      "net": 31.33,
+      "pf": 5.7,
+      "dd": 1.3
+    },
+    {
+      "name": "maxStopAtr 2.0",
+      "trades": 163,
+      "wr": 72.4,
+      "net": 30.84,
+      "pf": 7.51,
+      "dd": 1.3
+    },
+    {
+      "name": "maxStopAtr 3.0",
+      "trades": 208,
+      "wr": 72.6,
+      "net": 31.62,
+      "pf": 5.69,
+      "dd": 1.3
+    },
+    {
+      "name": "beTrigger 0.8",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 31.23,
+      "pf": 5.68,
+      "dd": 1.3
+    },
+    {
+      "name": "maxHold 72",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 30.4,
+      "pf": 5.56,
+      "dd": 1.3
+    },
+    {
+      "name": "maxHold 144",
+      "trades": 194,
+      "wr": 71.6,
+      "net": 30.54,
+      "pf": 5.58,
+      "dd": 1.3
+    }
+  ]
+}

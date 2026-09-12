@@ -645,6 +645,8 @@ export function csvConfigFromUi(
     obInvalidation: string;
     obDisplacementFactor: number;
     tierB: number;
+    /** TP1/TP2/TP3 exit ladder — preset-specific (Best 40/30/30, Max R 25/25/50) */
+    partialShares?: [number, number, number];
     spread?: number | null;
     slip?: number | null;
     commBp?: number | null;
@@ -664,6 +666,7 @@ export function csvConfigFromUi(
     obDisplacementFactor: ui.obDisplacementFactor,
     tierB: ui.tierB,
   };
+  if (ui.partialShares) cfg.partialShares = ui.partialShares;
   if (ui.spread != null || ui.slip != null || ui.commBp != null) {
     const base = DEFAULT_COSTS[symbol];
     cfg.costs = {

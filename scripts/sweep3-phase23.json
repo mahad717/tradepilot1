@@ -1,0 +1,178 @@
+{
+  "phase2": [
+    {
+      "name": "T25+C8",
+      "trades": 214,
+      "wr": 79.9,
+      "net": 42.95,
+      "pf": 10.97,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+P2550",
+      "trades": 205,
+      "wr": 82,
+      "net": 43.02,
+      "pf": 10.29,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+P3035",
+      "trades": 207,
+      "wr": 81.2,
+      "net": 41.9,
+      "pf": 11.55,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+B65",
+      "trades": 211,
+      "wr": 80.1,
+      "net": 38.12,
+      "pf": 9.84,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+MS3",
+      "trades": 226,
+      "wr": 81,
+      "net": 39.2,
+      "pf": 10.16,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+C8+P2550",
+      "trades": 209,
+      "wr": 82.3,
+      "net": 50.38,
+      "pf": 11.88,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+C8+P3035",
+      "trades": 212,
+      "wr": 81.6,
+      "net": 47.91,
+      "pf": 13.07,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+C8+B65",
+      "trades": 216,
+      "wr": 80.1,
+      "net": 43.46,
+      "pf": 11.08,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+C8+MS3",
+      "trades": 231,
+      "wr": 81,
+      "net": 44.51,
+      "pf": 11.4,
+      "dd": 1.12
+    },
+    {
+      "name": "T20+C8",
+      "trades": 210,
+      "wr": 77.6,
+      "net": 42.11,
+      "pf": 8.11,
+      "dd": 1.29
+    },
+    {
+      "name": "T20+P2550",
+      "trades": 204,
+      "wr": 78.9,
+      "net": 43.59,
+      "pf": 7.88,
+      "dd": 1.29
+    },
+    {
+      "name": "T20+C8+P2550",
+      "trades": 207,
+      "wr": 79.2,
+      "net": 51.02,
+      "pf": 9.05,
+      "dd": 1.29
+    },
+    {
+      "name": "T25+C8+P2550+B65",
+      "trades": 211,
+      "wr": 82,
+      "net": 50.69,
+      "pf": 11.95,
+      "dd": 1.12
+    },
+    {
+      "name": "T25+C8+P3035+B65",
+      "trades": 214,
+      "wr": 81.8,
+      "net": 48.28,
+      "pf": 13.16,
+      "dd": 1.12
+    }
+  ],
+  "champion": {
+    "name": "T20+C8+P2550",
+    "over": {
+      "entryToleranceR": 0.2,
+      "minBarsBetweenSignals": 8,
+      "partialShares": [
+        0.25,
+        0.25,
+        0.5
+      ]
+    },
+    "W1": {
+      "name": "T20+C8+P2550",
+      "trades": 207,
+      "wr": 79.2,
+      "net": 51.02,
+      "pf": 9.05,
+      "dd": 1.29
+    },
+    "W2": {
+      "baseline": {
+        "name": "W2 baseline",
+        "trades": 137,
+        "wr": 33.6,
+        "net": 1.74,
+        "pf": 1.19,
+        "dd": 4.28
+      },
+      "champion": {
+        "name": "W2 champion",
+        "trades": 138,
+        "wr": 48.6,
+        "net": 7.95,
+        "pf": 2.18,
+        "dd": 1.67
+      }
+    },
+    "W3": {
+      "baseline": {
+        "name": "W3 baseline",
+        "trades": 160,
+        "wr": 40,
+        "net": 2.24,
+        "pf": 1.19,
+        "dd": 3.59
+      },
+      "champion": {
+        "name": "W3 champion",
+        "trades": 169,
+        "wr": 52.7,
+        "net": 7.8,
+        "pf": 1.74,
+        "dd": 2.89
+      }
+    },
+    "bestGuard": {
+      "trades": 91,
+      "wr": 80.2,
+      "net": 20.7
+    },
+    "verdict": "SHIP"
+  }
+}

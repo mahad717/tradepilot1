@@ -95,4 +95,42 @@ const entryPlan = dimensionPlan("entry");
 check("entry rows with 0.15R", entryPlan.length === 4 && entryPlan[3].label === "Midpoint + 0.15R tolerance", entryPlan.map((x) => x.label).join(" | "));
 
 console.log(`\n${pass} passed, ${fail} failed`);
+if (fail) process.exit(1);
+
+// ---------------------------------------------------------------------------
+// Task 21 — "All sessions · max R" champion (tol 0.25 · ladder 25/25/50 ·
+// engine cooldown 8). Best assertions above double as the cooldown-8 no-op
+// guard for the kill-zone profile (91/80.2/+20.70 identical to Task 20).
+// ---------------------------------------------------------------------------
+console.log("\n=== Max R champion (all sessions · tol 0.25 · ladder 25/25/50) ===");
+const uiMaxR = { ...ui, sessions: [] as string[], entryToleranceR: 0.25, partialShares: [0.25, 0.25, 0.5] as [number, number, number] };
+const mr = runCsvBacktest({
+  symbol: "XAUUSD" as SymbolKey, csvSummary: summary, candles,
+  strictness: "balanced", config: csvConfigFromUi("XAUUSD" as SymbolKey, uiMaxR),
+});
+const mm = mr.metrics;
+check("Max R trade count", mr.trades.length === 209, `209 expected, got ${mr.trades.length}`);
+check("Max R win rate", near(mm.winRate, 82.3, 0.1), `82.3% expected, got ${mm.winRate}%`);
+check("Max R net", near(mm.netR, 50.38, 0.06), `+50.38R expected, got ${mm.netR}R`);
+check("Max R PF", near(mm.profitFactor, 11.88, 0.05), `11.88 expected, got ${mm.profitFactor}`);
+check("Max R DD", near(mm.maxDrawdownR, 1.12, 0.02), `1.12R expected, got ${mm.maxDrawdownR}R`);
+check("Max R flags", mr.flags.level === "GREEN", `GREEN expected, got ${mr.flags.level}`);
+const oosMax = mr.walkForward.splits.find((s) => s.name.startsWith("OUT"))?.stats;
+check("Max R OOS", !!oosMax && near(oosMax.netR, 13.4, 0.1), `+13.40R expected, got ${oosMax ? oosMax.netR : "n/a"}R`);
+check("Max R ladder echo", JSON.stringify(mr.config.partialShares) === "[0.25,0.25,0.5]", `expected [0.25,0.25,0.5], got ${JSON.stringify(mr.config.partialShares)}`);
+
+const mrW2 = runCsvBacktest({ symbol: "XAUUSD" as SymbolKey, csvSummary: summary, candles: W2, strictness: "balanced", config: csvConfigFromUi("XAUUSD" as SymbolKey, uiMaxR) });
+const mrW3 = runCsvBacktest({ symbol: "XAUUSD" as SymbolKey, csvSummary: summary, candles: W3, strictness: "balanced", config: csvConfigFromUi("XAUUSD" as SymbolKey, uiMaxR) });
+check("Max R W2 gate", mrW2.metrics.netR > 1.74, `>+1.74R (old default) expected, got ${mrW2.metrics.netR}R (wr ${mrW2.metrics.winRate}%)`);
+check("Max R W3 gate", mrW3.metrics.netR > 2.27, `>+2.27R (old default) expected, got ${mrW3.metrics.netR}R (wr ${mrW3.metrics.winRate}%)`);
+
+const pessMax = amb("pessimistic"); // uses the Best ui — guard unchanged
+void pessMax;
+const pessMaxR = runCsvBacktest({
+  symbol: "XAUUSD" as SymbolKey, csvSummary: summary, candles, strictness: "balanced",
+  config: { ...csvConfigFromUi("XAUUSD" as SymbolKey, uiMaxR), ambiguity: "pessimistic" } as never,
+});
+check("Max R pessimistic read", near(pessMaxR.metrics.winRate, 80.4, 0.1) && near(pessMaxR.metrics.netR, 39.59, 0.1), `80.4% / +39.59R expected, got ${pessMaxR.metrics.winRate}% / ${pessMaxR.metrics.netR}R`);
+
+console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

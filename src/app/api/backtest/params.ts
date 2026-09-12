@@ -79,6 +79,9 @@ export function parseBacktestParams(
   const obInvalidationParam = searchParams.get("obInvalidation") ?? "close-mid";
   const obDispParam = Number(searchParams.get("obDisp") ?? "1.2");
   const tierBParam = Number(searchParams.get("tierB") ?? "70");
+  // TP1/TP2/TP3 exit ladder as "a/b/c" percentages — preset-specific (Best
+  // 40/30/30, Max R 25/25/50); must sum to 100 within rounding.
+  const ladderParam = searchParams.get("ladder") ?? "40/30/30";
   const spreadParam = searchParams.get("spread");
   const slipParam = searchParams.get("slip");
   const commBpParam = searchParams.get("commBp");
@@ -141,6 +144,15 @@ export function parseBacktestParams(
   if (!Number.isFinite(expiryParam) || expiryParam < 1 || expiryParam > 50) {
     return { ok: false, error: "expiry must be between 1 and 50 bars" };
   }
+  const ladderParts = ladderParam.split("/").map((s) => Number(s));
+  if (
+    ladderParts.length !== 3 ||
+    ladderParts.some((n) => !Number.isFinite(n) || n < 5 || n > 80) ||
+    Math.abs(ladderParts.reduce((s, n) => s + n, 0) - 100) > 0.5
+  ) {
+    return { ok: false, error: "ladder must be a/b/c percentages summing to 100 (e.g. 40/30/30)" };
+  }
+  const partialShares = ladderParts.map((n) => n / 100) as [number, number, number];
 
   const sessions = sessionsParam
     .split(",")
@@ -164,6 +176,7 @@ export function parseBacktestParams(
       obDisplacementFactor: obDispParam,
       tierB: tierBParam,
       orderExpiryBars: expiryParam,
+      partialShares,
       ...over,
     };
     if (spreadParam !== null || slipParam !== null || commBpParam !== null) {

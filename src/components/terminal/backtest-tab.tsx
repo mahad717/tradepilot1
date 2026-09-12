@@ -279,6 +279,9 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [entryAnchor, setEntryAnchor] = useState("midpoint");
   const [entryTolerance, setEntryTolerance] = useState("0.15");
   const [orderExpiry, setOrderExpiry] = useState("30");
+  // TP1/TP2/TP3 exit ladder — preset-specific: Best keeps the WR-optimized
+  // 40/30/30, Max R rides the sweep-verified 25/25/50 runners.
+  const [ladder, setLadder] = useState("40/30/30");
   const [costGate, setCostGate] = useState("0.35");
   const [obInvalidation, setObInvalidation] = useState("close-mid");
   const [obDisp, setObDisp] = useState("1.2");
@@ -361,6 +364,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         tierB,
         sessions,
         strictness,
+        ladder,
       });
       if (spread !== "") params.set("spread", spread);
       if (slip !== "") params.set("slip", slip);
@@ -399,6 +403,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           obInvalidation,
           obDisplacementFactor: Number(obDisp),
           tierB: Number(tierB),
+          partialShares: ladder.split("/").map((n) => Number(n) / 100) as [number, number, number],
           spread: spread === "" ? null : Number(spread),
           slip: slip === "" ? null : Number(slip),
           commBp: commBp === "" ? null : Number(commBp),
@@ -546,24 +551,25 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   // walk-forward sweep upgrade (XAUUSD 15m, 480k-candle CSV, 25k window):
   // 91 trades · 80.2% WR · PF 17.43 · +20.70R net · maxDD 0.26R · OOS +9.03R ·
   // 5/5 periods. "Baseline" is the conservative read of the SAME data
-  // (pessimistic ambiguity, edge fills, all sessions): 172 trades · 36.0% WR ·
-  // +7.86R · DD 5.11R. "Max R" trades all sessions for the largest total:
-  // 194 trades · 71.6% WR · +31.23R.
+  // (pessimistic ambiguity, edge fills, all sessions): 181 trades · 35.4% WR ·
+  // +7.11R · DD 6.03R. "Max R" is the round-3 champion: all sessions with a
+  // wider 0.25R last-look and a runner-heavy 25/25/50 ladder — 209 trades ·
+  // 82.3% WR · +50.38R.
   const PRESETS: Record<string, { label: string; title: string; values: Record<string, string> }> = {
     best: {
       label: "★ Best (verified)",
-      title: "User-verified + walk-forward-sweep on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.15R tolerance · 30-bar expiry — 91 trades, 80.2% WR, PF 17.43, maxDD 0.26R, +20.70R net, OOS +9.03R, 5/5 periods (GREEN). Both unseen windows improve too (+3.10R / +1.82R) — generalizes beyond the fitted window. Pessimistic read: 78.0% / +19.71R.",
-      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.15", orderExpiry: "30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "User-verified + walk-forward-sweep on XAUUSD 15m CSV (25k bars): London+NY kill zones · BE+ costs · Optimistic ambiguity · Midpoint anchor · +0.15R tolerance · 30-bar expiry · 40/30/30 ladder — 91 trades, 80.2% WR, PF 17.43, maxDD 0.26R, +20.70R net, OOS +9.03R, 5/5 periods (GREEN). Both unseen windows improve too (+3.10R / +1.82R) — generalizes beyond the fitted window. Pessimistic read: 78.0% / +19.71R.",
+      values: { sessions: "london,ny-am,ny-pm", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.15", orderExpiry: "30", ladder: "40/30/30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
     baseline: {
       label: "Conservative baseline",
-      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 172 trades, 36.0% WR, PF 1.49, maxDD 5.11R, +7.86R net. Use it as the lower bound.",
-      values: { sessions: "", beMode: "tp1", ambiguity: "pessimistic", entryAnchor: "edge", entryTolerance: "0.05", orderExpiry: "24", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "Honest-touch read of the same data: all sessions · plain BE · Pessimistic ambiguity · edge fills — 181 trades, 35.4% WR, PF 1.41, maxDD 6.03R, +7.11R net. Use it as the lower bound.",
+      values: { sessions: "", beMode: "tp1", ambiguity: "pessimistic", entryAnchor: "edge", entryTolerance: "0.05", orderExpiry: "24", ladder: "40/30/30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
     maxr: {
       label: "All sessions · max R",
-      title: "Same quality knobs as Best but trading ALL sessions: 194 trades, 71.6% WR, PF 5.68, maxDD 1.30R, +31.23R net, OOS +12.43R, 5/5 periods — the largest total R at a still-positive expectancy. Win rate is lower than Best by design (more, cheaper setups).",
-      values: { sessions: "", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.15", orderExpiry: "30", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
+      title: "Round-3 sweep champion: same quality knobs as Best but ALL sessions · +0.25R tolerance · 25/25/50 ladder — 209 trades, 82.3% WR, PF 11.88, maxDD 1.12R, +50.38R net, OOS +13.40R, 5/5 periods (GREEN). Both unseen windows improve (+9.92R / +15.75R vs +1.74R / +2.27R). Pessimistic read: 80.4% / +39.59R. More fills, wider ladder, and MORE R than the 194/71.6%/+31.23R it replaces.",
+      values: { sessions: "", beMode: "tp1cost", ambiguity: "optimistic", entryAnchor: "midpoint", entryTolerance: "0.25", orderExpiry: "30", ladder: "25/25/50", costGate: "0.35", minRR: "2", tierB: "70", obDisp: "1.2", obInvalidation: "close-mid", strictness: "balanced" },
     },
   };
   function applyPreset(p: { values: Record<string, string> }) {
@@ -574,6 +580,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
     if (v.entryAnchor !== undefined) setEntryAnchor(v.entryAnchor);
     if (v.entryTolerance !== undefined) setEntryTolerance(v.entryTolerance);
     if (v.orderExpiry !== undefined) setOrderExpiry(v.orderExpiry);
+    if (v.ladder !== undefined) setLadder(v.ladder);
     if (v.costGate !== undefined) setCostGate(v.costGate);
     if (v.minRR !== undefined) setMinRR(v.minRR);
     if (v.tierB !== undefined) setTierB(v.tierB);
@@ -582,9 +589,9 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
     if (v.strictness !== undefined) setStrictness(v.strictness);
   }
   const onBest =
-    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && orderExpiry === "30";
+    sessions === "london,ny-am,ny-pm" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && orderExpiry === "30" && ladder === "40/30/30";
   const onBaseline = sessions === "" && beMode === "tp1" && ambiguity === "pessimistic" && entryAnchor === "edge";
-  const onMaxR = sessions === "" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint";
+  const onMaxR = sessions === "" && beMode === "tp1cost" && ambiguity === "optimistic" && entryAnchor === "midpoint" && ladder === "25/25/50" && entryTolerance === "0.25";
 
   return (
     <div className="space-y-6">
@@ -717,6 +724,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <option value="0.05">+0.05R</option>
             <option value="0.1">+0.10R</option>
             <option value="0.15">+0.15R (verified best)</option>
+            <option value="0.25">+0.25R (Max R best)</option>
           </select>
         </div>
         <div>
@@ -729,6 +737,17 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <option value="18">18 bars</option>
             <option value="24">24 bars</option>
             <option value="30">30 bars (verified best)</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bt-ladder" className="mb-1 block text-xs text-muted-foreground" title="TP1/TP2/TP3 exit ladder — how much of the position each target takes off. Round-3 sweep on XAU 15m: Best (kill zones) stays on the WR-optimized 40/30/30; the Max R preset rides a runner-heavy 25/25/50 (+19R at +10.7pp WR there). Heavy runners raise R but can LOWER win rate on tight profiles — re-verify per preset.">
+            TP ladder
+          </label>
+          <select id="bt-ladder" value={ladder} onChange={(e) => setLadder(e.target.value)} className={selectCls}>
+            <option value="40/30/30">40/30/30 (Best verified)</option>
+            <option value="25/25/50">25/25/50 (Max R best)</option>
+            <option value="30/35/35">30/35/35</option>
+            <option value="50/25/25">50/25/25 (legacy)</option>
           </select>
         </div>
         <div>

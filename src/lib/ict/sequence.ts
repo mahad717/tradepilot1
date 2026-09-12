@@ -196,7 +196,12 @@ export const DEFAULT_CONFIG: EngineConfig = {
   blockedVolRegimes: ["EXTREME"],
   rangeRegimeMinScore: 80,
 
-  minBarsBetweenSignals: 12,
+  // 8 bars (2h on 15m): round-3 sweep (Task 21, Max-R push). Loosening the
+  // signal gap adds fills in busy all-session profiles (+7.4R at +4 trades on
+  // the Max-R preset) and is a verified NO-OP on the kill-zone Best preset
+  // (identical 91/80.2%/+20.70R) — kill zones are sparse enough that the gap
+  // never binds there.
+  minBarsBetweenSignals: 8,
   oneTradePerSweep: true,
   sameZoneCooldown: true,
 
