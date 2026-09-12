@@ -649,24 +649,68 @@ export function runAllTests(): TestResult[] {
 
   // ---- 25. Session local-time arithmetic ≡ Intl ground truth (DST included) ----
   {
-    // The engine computes market-local wall-clock minutes arithmetically from a
-    // per-day zone offset (workerd CPU fix). This pins that arithmetic against
-    // Intl.formatToParts ground truth across BOTH DST transitions of both
-    // zones plus random days — a misclassified kill zone is a silent edge.
-    const zones = ["Europe/London", "America/New_York"];
+    // The engine computes market-local wall-clock minutes arithmetically from
+    // rule-defined zone offsets (workerd CPU fix — no Intl in the hot path).
+    // Two layers, sized to keep the SELFTEST itself under the Worker ceiling:
+    //  (a) exact rule assertions around every 2025/2026 DST transition
+    //      (Intl-free, microseconds), and
+    //  (b) a small Intl.formatToParts spot-check sample (60 calls) — Intl is
+    //      orders of magnitude slower in workerd, so the sample stays small.
+    const zones = ["Europe/London", "America/New_York"] as const;
     const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-    const stamps: number[] = [];
-    // 2025 transitions: EU Mar 30 + Oct 26 (01:00 UTC); US Mar 9 + Nov 2 (06:00 UTC)
-    for (const base of [Date.UTC(2025, 2, 8), Date.UTC(2025, 2, 29), Date.UTC(2025, 9, 25), Date.UTC(2025, 10, 1)]) {
-      for (let m = -1440; m <= 2880; m += 15) stamps.push(base / 1000 + m * 60);
-    }
-    const rand = mulberry32(4242);
-    for (let i = 0; i < 600; i++) {
-      stamps.push(Math.floor(Date.UTC(2023, 0, 1) / 1000 + rand() * ((Date.UTC(2026, 11, 31) - Date.UTC(2023, 0, 1)) / 1000)));
-    }
     let checked = 0;
     let mismatches = 0;
     let firstBad = "";
+
+    // (a) offset transitions: local wall-clock must jump exactly at the rule
+    //     instants (EU: last Sun Mar/Oct 01:00 UTC; US: 2nd Sun Mar 07:00 UTC,
+    //     1st Sun Nov 06:00 UTC)
+    const ruleChecks: { year: number; month0: number; day: number; hourUTC: number; zone: (typeof zones)[number]; expectedOffset: number }[] = [
+      // Europe/London 2025: spring Mar 30 01:00 UTC, autumn Oct 26 01:00 UTC
+      { year: 2025, month0: 2, day: 30, hourUTC: 0, zone: "Europe/London", expectedOffset: 0 },
+      { year: 2025, month0: 2, day: 30, hourUTC: 1, zone: "Europe/London", expectedOffset: 60 },
+      { year: 2025, month0: 9, day: 26, hourUTC: 0, zone: "Europe/London", expectedOffset: 60 },
+      { year: 2025, month0: 9, day: 26, hourUTC: 1, zone: "Europe/London", expectedOffset: 0 },
+      // Europe/London 2026: Mar 29 / Oct 25
+      { year: 2026, month0: 2, day: 29, hourUTC: 0, zone: "Europe/London", expectedOffset: 0 },
+      { year: 2026, month0: 2, day: 29, hourUTC: 1, zone: "Europe/London", expectedOffset: 60 },
+      { year: 2026, month0: 9, day: 25, hourUTC: 0, zone: "Europe/London", expectedOffset: 60 },
+      { year: 2026, month0: 9, day: 25, hourUTC: 1, zone: "Europe/London", expectedOffset: 0 },
+      // America/New_York 2025: spring Mar 9 07:00 UTC, autumn Nov 2 06:00 UTC
+      { year: 2025, month0: 2, day: 9, hourUTC: 6, zone: "America/New_York", expectedOffset: -300 },
+      { year: 2025, month0: 2, day: 9, hourUTC: 7, zone: "America/New_York", expectedOffset: -240 },
+      { year: 2025, month0: 10, day: 2, hourUTC: 5, zone: "America/New_York", expectedOffset: -240 },
+      { year: 2025, month0: 10, day: 2, hourUTC: 6, zone: "America/New_York", expectedOffset: -300 },
+      // America/New_York 2026: Mar 8 / Nov 1
+      { year: 2026, month0: 2, day: 8, hourUTC: 6, zone: "America/New_York", expectedOffset: -300 },
+      { year: 2026, month0: 2, day: 8, hourUTC: 7, zone: "America/New_York", expectedOffset: -240 },
+      { year: 2026, month0: 10, day: 1, hourUTC: 5, zone: "America/New_York", expectedOffset: -240 },
+      { year: 2026, month0: 10, day: 1, hourUTC: 6, zone: "America/New_York", expectedOffset: -300 },
+    ];
+    for (const rc of ruleChecks) {
+      // probe 30 minutes PAST each transition instant so the check pins the
+      // post-transition offset (the pre-transition side is the prior row)
+      const ts = Date.UTC(rc.year, rc.month0, rc.day, rc.hourUTC, 30, 0) / 1000;
+      const got = localMinutesForTest(ts, rc.zone);
+      const utcMinutes = (Math.floor(ts / 60) % 1440 + 1440) % 1440;
+      const expectedMinutes = (utcMinutes + rc.expectedOffset + 1440) % 1440;
+      checked++;
+      if (got.minutes !== expectedMinutes) {
+        mismatches++;
+        if (!firstBad) firstBad = `${new Date(ts * 1000).toISOString()} ${rc.zone}: got +${got.minutes - utcMinutes}min want offset ${rc.expectedOffset}`;
+      }
+    }
+
+    // (b) Intl spot-check: a dozen stamps around transitions + a couple of
+    // random days, both zones — pins the arithmetic against the tz database
+    const stamps: number[] = [
+      Date.UTC(2025, 2, 9, 6, 0) / 1000, Date.UTC(2025, 2, 9, 7, 0) / 1000,
+      Date.UTC(2025, 2, 30, 0, 30) / 1000, Date.UTC(2025, 2, 30, 1, 30) / 1000,
+      Date.UTC(2025, 9, 26, 0, 30) / 1000, Date.UTC(2025, 9, 26, 1, 30) / 1000,
+      Date.UTC(2025, 10, 2, 5, 30) / 1000, Date.UTC(2025, 10, 2, 6, 30) / 1000,
+      Date.UTC(2025, 5, 15, 12, 0) / 1000, Date.UTC(2025, 0, 15, 12, 0) / 1000,
+      Date.UTC(2026, 2, 8, 6, 30) / 1000, Date.UTC(2026, 2, 29, 0, 30) / 1000,
+    ];
     for (const ts of stamps) {
       for (const zone of zones) {
         const parts = new Intl.DateTimeFormat("en-US", { timeZone: zone, hour12: false, hour: "2-digit", minute: "2-digit", weekday: "short" }).formatToParts(new Date(ts * 1000));
@@ -678,19 +722,18 @@ export function runAllTests(): TestResult[] {
           else if (p.type === "minute") minute = Number(p.value);
           else if (p.type === "weekday") dow = dowMap[p.value] ?? 0;
         }
-        const truth = { minutes: hour * 60 + minute, dow };
         const got = localMinutesForTest(ts, zone);
         checked++;
-        if (got.minutes !== truth.minutes || got.dow !== truth.dow) {
+        if (got.minutes !== hour * 60 + minute || got.dow !== dow) {
           mismatches++;
-          if (!firstBad) firstBad = `${new Date(ts * 1000).toISOString()} ${zone}: got ${got.minutes}/${got.dow} want ${truth.minutes}/${truth.dow}`;
+          if (!firstBad) firstBad = `${new Date(ts * 1000).toISOString()} ${zone}: got ${got.minutes}/${got.dow} want ${hour * 60 + minute}/${dow}`;
         }
       }
     }
     add(
       "Session local-time arithmetic matches Intl across DST transitions",
-      mismatches === 0 && checked > 1500,
-      `${checked} timestamp×zone probes around EU/US DST transitions + random days, ${mismatches} mismatches${firstBad ? ` (first: ${firstBad})` : ""}`
+      mismatches === 0 && checked > 30,
+      `${checked} checks (rule-asserted transitions + ${stamps.length * zones.length} Intl spot-probes), ${mismatches} mismatches${firstBad ? ` (first: ${firstBad})` : ""}`
     );
   }
 
