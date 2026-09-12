@@ -68,6 +68,11 @@ export async function GET(req: Request) {
   // debug: run the deep pipeline stage by stage (fetch → smt → core) so a
   // resource-limit failure can be localized from the outside
   const stageParam = searchParams.get("stage") ?? "";
+  // debug/lean: trim=1 ships metrics + counts without trades/audit/samples;
+  // smt=0 skips the companion fetch (SMT confluence then contributes nothing,
+  // stated in the response note)
+  const trimParam = searchParams.get("trim") === "1";
+  const smtOffParam = searchParams.get("smt") === "0";
 
   if (!isSymbolKey(symbol)) {
     return NextResponse.json({ error: "Unknown symbol" }, { status: 400 });
@@ -214,13 +219,18 @@ export async function GET(req: Request) {
       });
     }
 
-    const result = await runBacktest({
-      symbol,
-      interval,
-      bars,
-      strictness,
-      config: buildConfig(),
-    });
+    const result = await runBacktest({ symbol, interval, bars, strictness, config: buildConfig(), includeCompanion: !smtOffParam });
+
+    let payload: unknown = result;
+    if (trimParam) {
+      const { trades, rejectedSamples, ...rest } = result;
+      payload = {
+        ...rest,
+        tradeCount: trades.length,
+        rejectedSamples: [],
+        trimmed: true,
+      };
+    }
 
     // minRR sensitivity across periods (stability view — NOT for cherry-picking)
     let sensitivity: { minRR: number; trades: number; winRate: number | null; expectancyR: number | null; profitFactor: number | null; netR: number }[] | undefined;
@@ -262,7 +272,7 @@ export async function GET(req: Request) {
       }
     }
 
-    return NextResponse.json({ ...result, sensitivity, comparison, dimensionComparison }, {
+    return NextResponse.json(trimParam ? payload : { ...payload, sensitivity, comparison, dimensionComparison }, {
       headers: { "Cache-Control": "private, max-age=300" },
     });
   } catch (err) {

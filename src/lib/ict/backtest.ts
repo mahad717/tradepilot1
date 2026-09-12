@@ -130,6 +130,8 @@ export interface BacktestOptions {
   config?: Partial<EngineConfig>;
   includeSilverForSmt?: boolean;
   strictness?: Strictness;
+  /** false skips the SMT companion fetch entirely (SMT confluence then absent) */
+  includeCompanion?: boolean;
 }
 
 /**
@@ -228,7 +230,9 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   // SMT companion (optional): the correlated second series SMT compares
   // against. Live companion → real divergence confluence; unavailable → SMT
   // score bonus is silently absent, which the run now states explicitly.
-  const companion = fetchRes.source === "LIVE" ? await getCompanionCandles(symbol, interval, bars) : null;
+  const companion = opts.includeCompanion === false || fetchRes.source !== "LIVE"
+    ? null
+    : await getCompanionCandles(symbol, interval, bars);
   const companionFailed = !!companion?.error;
   const companionCandles = companion && !companion.error ? dropWeekendCandles(companion.candles).candles : [];
   const smtEvents: SmtEvent[] = companionCandles.length > 40 ? smtSeries(candles, companionCandles) : [];
