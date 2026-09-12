@@ -524,6 +524,56 @@ export function runAllTests(): TestResult[] {
     );
   }
 
+  // ---- 21. OB displacement-factor knob (creation-side experiment) ---------
+  {
+    // same fixture as test 19: bullish OB = bearish candle 1 (zone 97–100)
+    // followed by a displacement candle with a 6.0 body. Mean TR ≈ 3.33, so:
+    //   factor 0.8 → threshold ≈ 2.7 ≤ 6.0 → block created
+    //   factor 2.5 → threshold ≈ 8.3 > 6.0 → block NOT created
+    const rows: [number, number, number, number][] = [
+      [100, 100.5, 99.5, 99.8],
+      [99.8, 100.0, 97.0, 97.2], // OB bearish candle (zone 97–100)
+      [97.2, 103.0, 97.0, 103.2], // displacement up (body 6.0)
+      [102.0, 103.0, 98.0, 102.5],
+      [102.5, 103.0, 96.0, 97.5],
+      [97.5, 98.0, 95.5, 96.0],
+    ];
+    const candles = mkCandles(rows);
+    const id = `ob-b-${candles[1].time}`;
+    const created = (factor: number) =>
+      buildSeriesContext("XAUUSD", "15min", candles, [], "close-mid", factor).zones.some((z) => z.id === id);
+    const loose = created(0.8);
+    const strict = created(2.5);
+    const pass = loose && !strict;
+    add(
+      "OB displacement factor controls creation (compare dim obDisplacement)",
+      pass,
+      `0.8× ATR → block ${loose ? "created" : "MISSING"} (expected created); 2.5× ATR → block ${strict ? "created (expected NONE — body 6.0 < 2.5×ATR)" : "correctly not created"}`
+    );
+  }
+
+  // ---- 22. editable cost model flows through accounting AND the gate ------
+  {
+    const candles = syntheticIctSeries(900);
+    const zero = runBacktestCore("XAUUSD", "15min", candles, [], testCoreConfig({ maxCostPctOfR: 0, costs: { XAUUSD: ZERO_COSTS, XAGUSD: ZERO_COSTS } }));
+    const real = runBacktestCore("XAUUSD", "15min", candles, [], testCoreConfig({ maxCostPctOfR: 0, costs: { XAUUSD: REAL_COSTS, XAGUSD: REAL_COSTS } }));
+    const doubled = runBacktestCore("XAUUSD", "15min", candles, [], testCoreConfig({ maxCostPctOfR: 0, costs: { XAUUSD: { ...REAL_COSTS, spread: REAL_COSTS.spread * 2 }, XAGUSD: REAL_COSTS } }));
+    // a custom cost model must also reach the execution-cost gate
+    const gated = runBacktestCore("XAUUSD", "15min", candles, [], testCoreConfig({ maxCostPctOfR: 0.01, costs: { XAUUSD: { spread: 5.0, slippagePerSide: 0.05, commissionPctPerSide: 0.00001 }, XAGUSD: REAL_COSTS } }));
+    const pass =
+      zero.trades.length > 0 &&
+      zero.metrics.costsR === 0 &&
+      real.metrics.costsR > 0 &&
+      doubled.metrics.costsR > real.metrics.costsR &&
+      real.trades.length === zero.trades.length &&
+      gated.trades.length === 0;
+    add(
+      "Editable cost model: override reaches accounting and the cost gate",
+      pass,
+      `zero → costsR ${zero.metrics.costsR} / ${zero.trades.length} trades; real → ${real.metrics.costsR}R; doubled spread → ${doubled.metrics.costsR}R (must rise); $5 spread + 0.01R gate → ${gated.trades.length} trades (expect 0)`
+    );
+  }
+
   return results;
 }
 

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { runBacktest, compareStrictness, compareDimension, type StrictnessComparisonRow, type CompareDimension } from "@/lib/ict/backtest";
 import type { Strictness } from "@/lib/ict/sequence";
+import type { EngineConfig } from "@/lib/ict/sequence";
+import { DEFAULT_COSTS } from "@/lib/ict/costs";
 import { getAuthUser } from "@/lib/auth";
 import { getDb, DbUnavailableError } from "@/lib/db";
 import { isIntervalKey, isSymbolKey } from "@/lib/market";
@@ -12,7 +14,7 @@ const BE_MODES = ["off", "tp1", "risk1", "structural"];
 const AMBIGUITY_MODES = ["pessimistic", "optimistic", "randomized", "ltf"];
 const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
 const STRICTNESS_LEVELS = ["conservative", "balanced", "aggressive"];
-const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "obInvalidation"];
+const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "obInvalidation", "obDisplacement"];
 const OB_INVALIDATION_MODES = ["close-mid", "wick-mid", "close-distal", "wick-distal"];
 
 /**
@@ -31,6 +33,9 @@ async function resolveDb() {
  * GET /api/backtest — engine v3.
  * Params: symbol, interval, bars, minRR, beMode, ambiguity, sessions,
  *         strictness (conservative|balanced|aggressive), compare (0|1),
+ *         compareDim, entryAnchor, entryTolerance, costGate, horizon,
+ *         obInvalidation, obDisp, tierB,
+ *         spread/slip/commBp (optional per-run cost-model overrides),
  *         sensitivity (comma list of minRR variants for stability comparison)
  */
 export async function GET(req: Request) {
@@ -49,7 +54,12 @@ export async function GET(req: Request) {
   const costGateParam = Number(searchParams.get("costGate") ?? "0.35");
   const horizonParam = Number(searchParams.get("horizon") ?? "8");
   const obInvalidationParam = searchParams.get("obInvalidation") ?? "close-mid";
+  const obDispParam = Number(searchParams.get("obDisp") ?? "1.2");
   const tierBParam = Number(searchParams.get("tierB") ?? "70");
+  // editable cost model (per run): empty/absent params keep the symbol defaults
+  const spreadParam = searchParams.get("spread");
+  const slipParam = searchParams.get("slip");
+  const commBpParam = searchParams.get("commBp");
   const compare = searchParams.get("compare") === "1";
   const compareDimParam = searchParams.get("compareDim") ?? "strictness";
   const sensitivityParam = searchParams.get("sensitivity") ?? "";
@@ -81,6 +91,18 @@ export async function GET(req: Request) {
   if (!OB_INVALIDATION_MODES.includes(obInvalidationParam)) {
     return NextResponse.json({ error: "obInvalidation must be close-mid|wick-mid|close-distal|wick-distal" }, { status: 400 });
   }
+  if (!Number.isFinite(obDispParam) || obDispParam < 0.5 || obDispParam > 3) {
+    return NextResponse.json({ error: "obDisp must be between 0.5 and 3 (ATR multiples for OB creation)" }, { status: 400 });
+  }
+  if (spreadParam !== null && (!Number.isFinite(Number(spreadParam)) || Number(spreadParam) < 0 || Number(spreadParam) > 10)) {
+    return NextResponse.json({ error: "spread must be between 0 and 10 (price units)" }, { status: 400 });
+  }
+  if (slipParam !== null && (!Number.isFinite(Number(slipParam)) || Number(slipParam) < 0 || Number(slipParam) > 5)) {
+    return NextResponse.json({ error: "slip must be between 0 and 5 (price units per side)" }, { status: 400 });
+  }
+  if (commBpParam !== null && (!Number.isFinite(Number(commBpParam)) || Number(commBpParam) < 0 || Number(commBpParam) > 20)) {
+    return NextResponse.json({ error: "commBp must be between 0 and 20 (basis points per side)" }, { status: 400 });
+  }
   if (!Number.isFinite(tierBParam) || tierBParam < 60 || tierBParam > 90) {
     return NextResponse.json({ error: "tierB must be between 60 and 90" }, { status: 400 });
   }
@@ -102,25 +124,45 @@ export async function GET(req: Request) {
     .map((s) => s.trim())
     .filter((s) => s.length > 0 && s !== "any" && SESSION_KEYS.includes(s));
 
+  // one config builder — every run in this request (main, sensitivity,
+  // comparisons) MUST share identical knobs so rows are comparable
+  const buildConfig = (over: Partial<EngineConfig> = {}): Partial<EngineConfig> => {
+    const cfg: Partial<EngineConfig> = {
+      minRR,
+      beMode: beMode as never,
+      ambiguity: ambiguity as never,
+      randomSeed: Number.isFinite(seed) ? seed : 42,
+      sessions,
+      entryAnchor: entryAnchorParam as never,
+      entryToleranceR: entryToleranceParam,
+      maxCostPctOfR: costGateParam,
+      targetHorizonR: horizonParam,
+      obInvalidation: obInvalidationParam as never,
+      obDisplacementFactor: obDispParam,
+      tierB: tierBParam,
+      ...over,
+    };
+    if (spreadParam !== null || slipParam !== null || commBpParam !== null) {
+      const base = DEFAULT_COSTS[symbol as keyof typeof DEFAULT_COSTS];
+      cfg.costs = {
+        ...DEFAULT_COSTS,
+        [symbol]: {
+          spread: spreadParam !== null ? Number(spreadParam) : base?.spread ?? 0,
+          slippagePerSide: slipParam !== null ? Number(slipParam) : base?.slippagePerSide ?? 0,
+          commissionPctPerSide: commBpParam !== null ? Number(commBpParam) / 1e4 : base?.commissionPctPerSide ?? 0,
+        },
+      } as never;
+    }
+    return cfg;
+  };
+
   try {
     const result = await runBacktest({
       symbol,
       interval,
       bars,
       strictness,
-      config: {
-        minRR,
-        beMode: beMode as never,
-        ambiguity: ambiguity as never,
-        randomSeed: Number.isFinite(seed) ? seed : 42,
-        sessions,
-        entryAnchor: entryAnchorParam as never,
-        entryToleranceR: entryToleranceParam,
-        maxCostPctOfR: costGateParam,
-        targetHorizonR: horizonParam,
-        obInvalidation: obInvalidationParam as never,
-        tierB: tierBParam,
-      },
+      config: buildConfig(),
     });
 
     // minRR sensitivity across periods (stability view — NOT for cherry-picking)
@@ -135,7 +177,7 @@ export async function GET(req: Request) {
         const r =
           rr === minRR
             ? result
-            : await runBacktest({ symbol, interval, bars, strictness, config: { minRR: rr, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam, obInvalidation: obInvalidationParam as never, tierB: tierBParam } });
+            : await runBacktest({ symbol, interval, bars, strictness, config: buildConfig({ minRR: rr, targetHorizonR: horizonParam }) });
         sensitivity.push({
           minRR: rr,
           trades: r.metrics.trades,
@@ -148,27 +190,18 @@ export async function GET(req: Request) {
     }
 
     // Comparison across ONE dimension (spec §16, §17 extended): strictness
-    // presets, pending-order expiry, session filter, or entry placement.
+    // presets, pending-order expiry, session filter, entry placement, or the
+    // two sides of the OB definition (invalidation rule / creation threshold).
     let comparison: StrictnessComparisonRow[] | undefined;
     let dimensionComparison: Awaited<ReturnType<typeof compareDimension>> | undefined;
     if (compare) {
       const dim = compareDimParam as CompareDimension;
       dimensionComparison = await compareDimension(
-        {
-          symbol,
-          interval,
-          bars,
-          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam, obInvalidation: obInvalidationParam as never, tierB: tierBParam },
-        },
+        { symbol, interval, bars, config: buildConfig() },
         dim
       );
       if (dim === "strictness") {
-        comparison = await compareStrictness({
-          symbol,
-          interval,
-          bars,
-          config: { minRR, beMode: beMode as never, ambiguity: ambiguity as never, randomSeed: Number.isFinite(seed) ? seed : 42, sessions, entryAnchor: entryAnchorParam as never, entryToleranceR: entryToleranceParam, maxCostPctOfR: costGateParam, obInvalidation: obInvalidationParam as never, tierB: tierBParam },
-        });
+        comparison = await compareStrictness({ symbol, interval, bars, config: buildConfig() });
       }
     }
 

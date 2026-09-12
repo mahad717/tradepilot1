@@ -40,7 +40,7 @@ import { walkForward, type WalkForwardResult } from "./walkforward";
 import { smtSeries, type SmtEvent } from "./smtseries";
 import { DEFAULT_COSTS, describeCosts } from "./costs";
 import { getCompanionCandles } from "@/lib/market";
-import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary, ObPipeline } from "./types";
+import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary, ObPipeline, SmtSplit, SmtSplitStat } from "./types";
 import type { Candle } from "@/lib/market/types";
 
 export interface BacktestResult {
@@ -80,6 +80,14 @@ export interface BacktestResult {
   obPipeline: ObPipeline;
   /** active OB invalidation rule (compare dimension "obInvalidation") */
   obInvalidation: string;
+  /** active OB creation threshold — displacement body ≥ factor × per-bar ATR */
+  obDisplacement: number;
+  /**
+   * Live-SMT honesty check: do SMT-aligned entries actually outperform?
+   * null when no live companion ran on this window (a split without SMT
+   * data would be attribution noise, same as the no-smt loser tag).
+   */
+  smtSplit: SmtSplit | null;
   /** requested vs actually-fetched history (deep windows can fall short) */
   fetch: { requested: number; receivedRaw: number; requests: number; shortfallPct: number; deep: boolean };
   strictness: Strictness;
@@ -108,6 +116,7 @@ export interface BacktestResult {
     targetHorizonR: number;
     orderExpiryBars: number;
     obInvalidation: string;
+    obDisplacementFactor: number;
     tierB: number;
   };
   notes: string[];
@@ -291,7 +300,7 @@ export function runBacktestCore(
   strictness: Strictness = "balanced",
   dataQuality?: DataQuality
 ): BacktestResult {
-  const ctx = buildSeriesContext(symbol, interval, candles, smtEvents, cfg.obInvalidation);
+  const ctx = buildSeriesContext(symbol, interval, candles, smtEvents, cfg.obInvalidation, cfg.obDisplacementFactor);
   const execute: ExecuteConfig = {
     beMode: cfg.beMode,
     beTriggerR: cfg.beTriggerR,
@@ -386,7 +395,7 @@ export function runBacktestCore(
       ? `Execution-cost gate: ON — setups whose estimated round-trip cost exceeds ${(cfg.maxCostPctOfR * 100).toFixed(0)}% of 1R are declined (${ctx.diag.costRejected} rejected at the gate).`
       : "Execution-cost gate: OFF — every setup is evaluated regardless of its cost share of 1R.",
     `Entry: limit at the zone ${cfg.entryAnchor === "midpoint" ? "MIDPOINT (deeper fill, worse location)" : "proximal EDGE (ICT default)"}${cfg.entryToleranceR > 0 ? `, tolerance +${cfg.entryToleranceR}R (marketable last-look)` : ", strict touch (no tolerance)"}.`,
-    `OB invalidation rule: ${cfg.obInvalidation} — see the compare dimension for all four rules on the same data.`,
+    `OB invalidation rule: ${cfg.obInvalidation}; creation threshold: displacement body ≥ ${cfg.obDisplacementFactor} × per-bar ATR — the compare dimensions obInvalidation and obDisplacement scan both sides of the OB definition on the same data.`,
     `Target horizon: execution ladder capped at ${cfg.targetHorizonR}R — farther structural levels are landmarks for the RR landmark view, not tradable targets.`,
     `Same-candle SL/TP ambiguity: ${cfg.ambiguity} model. Pessimistic assumes the stop fills first.`,
     `Sessions traded: ${cfg.sessions.length ? cfg.sessions.join(", ") : "ALL (kill zone is a score confluence)"}. Volatility blocks: ${cfg.blockedVolRegimes.join(", ") || "none"}. UNCLEAR market regime → NO TRADE.`,
@@ -412,8 +421,13 @@ export function runBacktestCore(
     skippedBlacklist: ctx.diag.obSkipBlacklist,
     candidatesWithOb: ctx.diag.obSeen,
     modelCValidSetups: modelCStat?.valid ?? 0,
-    note: obPipelineNote(ctx.diag),
+    displacementFactor: cfg.obDisplacementFactor,
+    note: obPipelineNote(ctx.diag, cfg.obDisplacementFactor),
   };
+
+  // SMT honesty split — only meaningful when a live companion actually ran
+  // (smtLive is computed above, next to the loser tagging)
+  const smtSplit: SmtSplit | null = smtLive ? smtSplitOf(trades) : null;
 
   // core default (pure runs have no companion I/O) — the public runner overrides
   const smt = {
@@ -448,6 +462,8 @@ export function runBacktestCore(
     ambiguityCollisions,
     obPipeline,
     obInvalidation: cfg.obInvalidation,
+    obDisplacement: cfg.obDisplacementFactor,
+    smtSplit,
     fetch: { requested: candles.length, receivedRaw: candles.length, requests: 0, shortfallPct: 0, deep: false },
     strictness,
     strictnessNote: STRICTNESS_PRESETS[strictness],
@@ -475,6 +491,7 @@ export function runBacktestCore(
       targetHorizonR: cfg.targetHorizonR,
       orderExpiryBars: cfg.orderExpiryBars,
       obInvalidation: cfg.obInvalidation,
+      obDisplacementFactor: cfg.obDisplacementFactor,
       tierB: cfg.tierB,
     },
     notes,
@@ -483,12 +500,12 @@ export function runBacktestCore(
 
 // local re-implementations to avoid circular import with diagnostics
 /** One-line diagnosis of where OB candidates actually die. */
-function obPipelineNote(diag: import("./sequence").DiagSink): string {
+function obPipelineNote(diag: import("./sequence").DiagSink, factor: number): string {
   if (diag.obZonesCreated === 0) {
-    return "No order blocks were created in this window at all — the displacement requirement (body ≥ 1.2 × per-bar ATR with opposing direction) never fired; the detector, not the window, is the bottleneck.";
+    return `No order blocks were created in this window at all — the displacement requirement (body ≥ ${factor} × per-bar ATR with opposing direction) never fired; the detector, not the window, is the bottleneck.`;
   }
   const parts: string[] = [
-    `${diag.obZonesCreated} OBs created series-wide (${diag.obZonesInvalidated} later invalidated)`,
+    `${diag.obZonesCreated} OBs created series-wide at ${factor}× ATR displacement (${diag.obZonesInvalidated} later invalidated)`,
   ];
   if (diag.obWindowSeen === 0) {
     parts.push("NONE fell inside a candidate's sweep→MSS window — the sequence window, not OB quality, is the bottleneck");
@@ -503,6 +520,32 @@ function obPipelineNote(diag: import("./sequence").DiagSink): string {
     parts.push(`${diag.obSeen} candidates kept a usable OB`);
   }
   return `${parts.join(" — ")}.`;
+}
+
+/**
+ * SMT honesty split: does the +5 alignment bonus separate outcomes? Cohorts
+ * are CLOSED trades, split on the entry-time SMT alignment flag. Notes call
+ * out tiny cohorts instead of pretending either row is evidence.
+ */
+function smtSplitOf(trades: TradeRecord[]): SmtSplit {
+  const stat = (ts: TradeRecord[]): SmtSplitStat => {
+    const m = computeMetrics(ts);
+    return { trades: ts.length, winRate: m.winRate, expectancyR: m.expectancyR, netR: m.netR };
+  };
+  const aligned = trades.filter((t) => t.smtAligned);
+  const notAligned = trades.filter((t) => !t.smtAligned);
+  const a = stat(aligned);
+  const n = stat(notAligned);
+  let note: string;
+  if (a.trades === 0 && n.trades === 0) {
+    note = "No closed trades on this window — no SMT conclusion is possible.";
+  } else if (a.trades < 5) {
+    note = `Only ${a.trades} SMT-aligned trade${a.trades === 1 ? "" : "s"} — the split is illustrative, not evidence. Judge the bonus via the score-bucket table and compare dimensions instead.`;
+  } else {
+    const edge = (a.expectancyR ?? 0) - (n.expectancyR ?? 0);
+    note = `Aligned entries ${edge >= 0 ? "outperform" : "UNDERPERFORM"} non-aligned by ${Math.abs(Math.round(edge * 100) / 100)}R expectancy on this window (${a.trades} vs ${n.trades} trades). One window is not proof — read both cohorts before trusting the +5 bonus.`;
+  }
+  return { live: true, aligned: a, notAligned: n, note };
 }
 
 function lossReasonTags(t: TradeRecord, smtLive: boolean): string[] {
@@ -606,7 +649,7 @@ export async function compareStrictness(
 // costs, entry placement and target realism.
 // ---------------------------------------------------------------------------
 
-export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry" | "obInvalidation";
+export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry" | "obInvalidation" | "obDisplacement";
 
 export interface DimensionRow {
   label: string;
@@ -683,6 +726,19 @@ export async function compareDimension(
       run("Wick through midpoint", "ANY trade beyond the midpoint kills the block (strictest)", { obInvalidation: "wick-mid" }),
       run("Close through full zone", "a CLOSE beyond the whole zone kills the block (classic strict ICT)", { obInvalidation: "close-distal" }),
       run("Wick through full zone", "ANY trade through the whole zone kills the block (loosest)", { obInvalidation: "wick-distal" }),
+    ]);
+    return { dimension, rows };
+  }
+  if (dimension === "obDisplacement") {
+    // The OB creation-side experiment — invalidation rules proved to give
+    // IDENTICAL trade sets (Task 12), so OB scarcity lives upstream at
+    // creation. Scan the displacement threshold; more created blocks should
+    // mean more Model C/D windows, at lower average zone quality.
+    const rows = await Promise.all([
+      run("0.8× ATR displacement", "very loose creation — any decent opposing-candle reversal qualifies", { obDisplacementFactor: 0.8 }),
+      run("1.0× ATR displacement", "loose creation — body at least one average true range", { obDisplacementFactor: 1.0 }),
+      run("1.2× ATR displacement", "current default — institutional displacement required", { obDisplacementFactor: 1.2 }),
+      run("1.5× ATR displacement", "strict creation — only violent reversals create blocks", { obDisplacementFactor: 1.5 }),
     ]);
     return { dimension, rows };
   }

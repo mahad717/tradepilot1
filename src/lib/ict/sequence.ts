@@ -139,6 +139,11 @@ export interface EngineConfig {
   targetHorizonR: number;
   /** when a tapped order block stops being tradable (default: close through midpoint) */
   obInvalidation: ObInvalidation;
+  /** OB creation threshold: displacement-candle body must exceed factor × per-bar ATR
+   *  (default 1.2). Lower values create more blocks — the compare dimension
+   *  "obDisplacement" scans the creation side, since diagnostics showed invalidation
+   *  rules do NOT change trade sets and creation scarcity is upstream. */
+  obDisplacementFactor: number;
 
   // statistical hygiene
   warmupBars: number;
@@ -206,6 +211,7 @@ export const DEFAULT_CONFIG: EngineConfig = {
   entryToleranceR: 0,
   targetHorizonR: 8,
   obInvalidation: "close-mid",
+  obDisplacementFactor: 1.2,
 
   warmupBars: 60,
   rangeLookbackBars: 96,
@@ -442,7 +448,8 @@ export function buildSeriesContext(
   interval: IntervalKey,
   candles: Candle[],
   smtEvents: { index: number; type: "BULLISH" | "BEARISH" }[] = [],
-  obInvalidation: ObInvalidation = "close-mid"
+  obInvalidation: ObInvalidation = "close-mid",
+  obDisplacementFactor = 1.2
 ): SeriesContext {
   const intervalSec = intervalSeconds(interval);
   const atrS = atrSeries(candles, 14);
@@ -456,7 +463,7 @@ export function buildSeriesContext(
   // OB invalidation = rule-configurable (default: CLOSE through midpoint —
   // a wick tap is the retest we trade). see zones.ts ObInvalidation.
   const fvgZones = detectFvg(candles, 100000, true);
-  const obZones = detectOrderBlocks(candles, atrS, 1.2, 100000, true, obInvalidation);
+  const obZones = detectOrderBlocks(candles, atrS, obDisplacementFactor, 100000, true, obInvalidation);
   const zones = [...fvgZones, ...obZones];
   const zoneMitigatedAt = new Map<string, number>();
   const zoneCreatedIndex = new Map<string, number>();

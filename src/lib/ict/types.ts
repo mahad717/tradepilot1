@@ -617,6 +617,28 @@ export interface ObPipeline {
   candidatesWithOb: number;
   /** candidates that passed every gate per Model C (context) */
   modelCValidSetups: number;
+  /** active creation threshold (displacement body ≥ factor × per-bar ATR) */
+  displacementFactor: number;
+  note: string;
+}
+
+/** Performance of one SMT-alignment cohort (validated only when SMT is live). */
+export interface SmtSplitStat {
+  trades: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  netR: number;
+}
+
+/**
+ * Does the +5 SMT confluence bonus actually separate outcomes? Split of
+ * CLOSED trades by whether a live SMT divergence was aligned at entry.
+ * null when no live companion ran — a split without SMT data would be noise.
+ */
+export interface SmtSplit {
+  live: boolean;
+  aligned: SmtSplitStat;
+  notAligned: SmtSplitStat;
   note: string;
 }
 

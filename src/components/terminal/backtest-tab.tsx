@@ -246,6 +246,10 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [entryTolerance, setEntryTolerance] = useState("0");
   const [costGate, setCostGate] = useState("0.35");
   const [obInvalidation, setObInvalidation] = useState("close-mid");
+  const [obDisp, setObDisp] = useState("1.2");
+  const [spread, setSpread] = useState("");
+  const [slip, setSlip] = useState("");
+  const [commBp, setCommBp] = useState("");
   const [tierB, setTierB] = useState("70");
   const [sessions, setSessions] = useState("");
   const [strictness, setStrictness] = useState("balanced");
@@ -278,10 +282,14 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         entryTolerance: entryTolerance,
         costGate,
         obInvalidation,
+        obDisp,
         tierB,
         sessions,
         strictness,
       });
+      if (spread !== "") params.set("spread", spread);
+      if (slip !== "") params.set("slip", slip);
+      if (commBp !== "") params.set("commBp", commBp);
       if (sensitivity) params.set("sensitivity", "1.5,2,2.5,3");
       if (compare) {
         params.set("compare", "1");
@@ -427,12 +435,33 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </select>
         </div>
         <div>
+          <label htmlFor="bt-spread" className="mb-1 block text-xs text-muted-foreground" title="Override the assumed bid/ask spread for this run, in price units. Empty = engine default (XAUUSD $0.30, XAGUSD $0.03). The active model is echoed in the notes; costs feed the cost gate and every trade's net R.">Spread $</label>
+          <input id="bt-spread" type="number" min="0" step="0.01" inputMode="decimal" placeholder="default" value={spread} onChange={(e) => setSpread(e.target.value)} className={`${selectCls} w-24`} />
+        </div>
+        <div>
+          <label htmlFor="bt-slip" className="mb-1 block text-xs text-muted-foreground" title="Override assumed slippage per fill side, in price units. Empty = engine default (XAUUSD $0.05, XAGUSD $0.01).">Slip $/side</label>
+          <input id="bt-slip" type="number" min="0" step="0.01" inputMode="decimal" placeholder="default" value={slip} onChange={(e) => setSlip(e.target.value)} className={`${selectCls} w-24`} />
+        </div>
+        <div>
+          <label htmlFor="bt-comm" className="mb-1 block text-xs text-muted-foreground" title="Override assumed commission per fill side, in basis points of price. Empty = engine default (0.1 bp/side).">Comm. bp/side</label>
+          <input id="bt-comm" type="number" min="0" step="0.1" inputMode="decimal" placeholder="default" value={commBp} onChange={(e) => setCommBp(e.target.value)} className={`${selectCls} w-24`} />
+        </div>
+        <div>
           <label htmlFor="bt-obi" className="mb-1 block text-xs text-muted-foreground" title="When a tapped order block stops being tradable. Default is the ICT close-through-midpoint rule — the compare dimension obInvalidation runs all four rules side by side.">OB invalidation</label>
           <select id="bt-obi" value={obInvalidation} onChange={(e) => setObInvalidation(e.target.value)} className={selectCls}>
             <option value="close-mid">Close thru midpoint</option>
             <option value="wick-mid">Wick thru midpoint</option>
             <option value="close-distal">Close thru zone</option>
             <option value="wick-distal">Wick thru zone</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="bt-obd" className="mb-1 block text-xs text-muted-foreground" title="OB creation threshold: the displacement candle after the block must have a body ≥ factor × per-bar ATR. Lower = more blocks (Model C/D wake up, average quality drops). The compare dimension obDisplacement scans 0.8/1.0/1.2/1.5 on the same data.">OB displacement</label>
+          <select id="bt-obd" value={obDisp} onChange={(e) => setObDisp(e.target.value)} className={selectCls}>
+            <option value="0.8">0.8× ATR</option>
+            <option value="1.0">1.0× ATR</option>
+            <option value="1.2">1.2× ATR (default)</option>
+            <option value="1.5">1.5× ATR</option>
           </select>
         </div>
         <div>
@@ -460,6 +489,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               <option value="sessions">Sessions (all vs kill zones)</option>
               <option value="entry">Entry placement (edge/tolerance/midpoint)</option>
               <option value="obInvalidation">OB invalidation rule (4 modes)</option>
+              <option value="obDisplacement">OB displacement factor (0.8–1.5)</option>
             </select>
           </div>
         )}
@@ -735,8 +765,8 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
 
           {/* ---------------- order-block creation pipeline (Model C/D diagnosis) ---------------- */}
           <Section
-            title={`Order-Block pipeline — where Model C/D candidates die (rule: ${result.obInvalidation})`}
-            subtitle="Series-wide creation → candidate-window visibility → skip reasons. Diagnoses WHY OB reversals are rare before anyone touches a threshold."
+            title={`Order-Block pipeline — where Model C/D candidates die (rule: ${result.obInvalidation} · creation ≥ ${result.obPipeline.displacementFactor}× ATR)`}
+            subtitle="Series-wide creation → candidate-window visibility → skip reasons. Diagnoses WHY OB reversals are rare before anyone touches a threshold. The compare dimensions obInvalidation / obDisplacement scan both sides of the definition."
           >
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
               <div className={metricCard} title="OB zones the detector created over the whole series (displacement-qualified opposing candles)"><p className="text-[10px] text-muted-foreground">OBs created</p><p className="font-bold">{result.obPipeline.zonesCreated}</p></div>
@@ -763,6 +793,33 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               <div className={metricCard} title="Share of traded bars whose timestamp has companion data — low coverage means SMT only judged the tail of the window"><p className="text-[10px] text-muted-foreground">Coverage</p><p className="font-bold">{result.smt?.coveragePct === null || result.smt?.coveragePct === undefined ? "—" : `${result.smt.coveragePct}%`}</p></div>
             </div>
             <p className="mt-2 text-[11px] text-muted-foreground">{result.smt?.note}</p>
+            {result.smtSplit?.live && (
+              <div className="mt-3">
+                <p className="mb-1 text-xs font-medium text-foreground/80">Does the +5 SMT bonus separate outcomes? — closed trades split by entry-time alignment</p>
+                <table className="w-full max-w-md text-left text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr><th className="px-2 py-1 font-medium">Cohort</th><th className="px-2 py-1 text-right font-medium">Trades</th><th className="px-2 py-1 text-right font-medium">Win%</th><th className="px-2 py-1 text-right font-medium">Expectancy</th><th className="px-2 py-1 text-right font-medium">Net R</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    <tr>
+                      <td className="px-2 py-1 font-medium">SMT-aligned</td>
+                      <td className="px-2 py-1 text-right">{result.smtSplit.aligned.trades}</td>
+                      <td className="px-2 py-1 text-right">{num(result.smtSplit.aligned.winRate, "%")}</td>
+                      <td className={`px-2 py-1 text-right ${(result.smtSplit.aligned.expectancyR ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{num(result.smtSplit.aligned.expectancyR, "R")}</td>
+                      <td className="px-2 py-1 text-right font-semibold">{result.smtSplit.aligned.netR}R</td>
+                    </tr>
+                    <tr>
+                      <td className="px-2 py-1 font-medium">Not aligned</td>
+                      <td className="px-2 py-1 text-right">{result.smtSplit.notAligned.trades}</td>
+                      <td className="px-2 py-1 text-right">{num(result.smtSplit.notAligned.winRate, "%")}</td>
+                      <td className={`px-2 py-1 text-right ${(result.smtSplit.notAligned.expectancyR ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{num(result.smtSplit.notAligned.expectancyR, "R")}</td>
+                      <td className="px-2 py-1 text-right font-semibold">{result.smtSplit.notAligned.netR}R</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p className="mt-1 text-[11px] text-muted-foreground">{result.smtSplit.note}</p>
+              </div>
+            )}
           </Section>
 
           {/* ---------------- pending-order flow: why orders don't fill ---------------- */}
