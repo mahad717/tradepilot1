@@ -5,7 +5,9 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
 import { fmtDate } from "./format";
 import { parseCsvCandles, intervalLabelOfKey, granularityLabel, coarseContext, type CsvParseSummary, type CoarseContext } from "@/lib/market/csv";
-import type { BacktestResult, StrictnessComparisonRow, DimensionComparison, CompareDimension } from "@/lib/ict/backtest";
+import type { Candle, SymbolKey } from "@/lib/market/types";
+import type { BacktestResult, StrictnessComparisonRow, DimensionComparison, CompareDimension, DimensionRow, SensitivityRow } from "@/lib/ict/backtest";
+import type { Strictness } from "@/lib/ict/sequence";
 import type { ConfluenceItem, RejectedSetupSample, TradeRecord } from "@/lib/ict/types";
 
 const metricCard = "rounded-lg border border-border bg-card px-3 py-2.5";
@@ -282,11 +284,13 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [compare, setCompare] = useState(false);
   const [compareDim, setCompareDim] = useState<CompareDimension>("strictness");
   const [result, setResult] = useState<(BacktestResult & {
-    sensitivity?: { minRR: number; trades: number; winRate: number | null; expectancyR: number | null; profitFactor: number | null; netR: number }[];
+    sensitivity?: SensitivityRow[];
     comparison?: StrictnessComparisonRow[];
     dimensionComparison?: DimensionComparison;
+    runtimeMs?: number;
   }) | null>(null);
   const [loading, setLoading] = useState(false);
+  const [runStage, setRunStage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   // compact deep-window mode: bars > 5000 ship without audit/confluence text
@@ -294,24 +298,27 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [compactMode, setCompactMode] = useState(false);
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const lastParamsRef = useRef<string | null>(null);
-  // data-source selector: live API (TwelveData) or an uploaded candle CSV
+  // data-source selector: live API (TwelveData) or an uploaded candle CSV.
+  // CSV runs execute ENTIRELY in the browser: the parsed candles live in a
+  // ref (the raw 25 MB text is never kept, never uploaded) and the engine is
+  // dynamically imported at run time — the Worker never sees the file, so
+  // its per-request CPU/memory ceiling (the old HTTP 503) cannot bite.
   const [dataSource, setDataSource] = useState<"api" | "csv">("api");
-  const [csvText, setCsvText] = useState<string | null>(null);
+  const csvCandlesRef = useRef<Candle[]>([]);
   const [csvName, setCsvName] = useState("");
   const [csvPreview, setCsvPreview] = useState<CsvParseSummary | null>(null);
   const [csvCtx, setCsvCtx] = useState<CoarseContext | null>(null);
-  const lastCsvRef = useRef<string | null>(null);
 
   async function onCsvFile(f: File | null) {
     setCsvPreview(null);
-    setCsvText(null);
     setCsvCtx(null);
+    csvCandlesRef.current = [];
     if (!f) return;
     setCsvName(f.name);
     try {
       const text = await f.text();
       const { candles, summary } = parseCsvCandles(text);
-      setCsvText(text);
+      csvCandlesRef.current = candles;
       setCsvPreview(summary);
       // coarse uploads can't run the engine — surface the higher-timeframe
       // read they CAN answer instead of a dead end
@@ -355,40 +362,79 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         params.set("compare", "1");
         params.set("compareDim", compareDim);
       }
-      // uploaded-CSV path: the FILE defines interval + window; the server
-      // re-parses authoritatively and auto-compacts deep responses
+      // uploaded-CSV path: the FILE defines interval + window, and the run
+      // executes LOCALLY — the pure engine core is imported on demand and the
+      // parsed candles never leave this tab. No upload, no Worker CPU/memory
+      // ceiling, and every trade ships with its full audit trail.
       if (dataSource === "csv") {
-        if (!csvText) throw new Error("Choose a CSV file first.");
-        params.delete("interval");
-        params.delete("bars");
-        params.delete("compact");
-        lastParamsRef.current = params.toString();
-        lastCsvRef.current = csvText;
+        const csvCandles = csvCandlesRef.current;
+        const summary = csvPreview;
+        if (csvCandles.length === 0 || !summary) throw new Error("Choose a CSV file first.");
+        if (symbol !== "XAUUSD" && symbol !== "XAGUSD") throw new Error(`CSV runs are not configured for ${symbol}`);
+        lastParamsRef.current = null; // no server round-trip to replay
         setCompactMode(false);
         setError(null);
-        let json: Record<string, unknown> | null = null;
-        let lastErr = "CSV backtest failed";
-        for (let attempt = 0; attempt < 2; attempt++) {
-          if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
-          const res = await fetch(`/api/backtest/csv?${params.toString()}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ csv: csvText }),
-          });
-          try {
-            json = (await res.json()) as Record<string, unknown>;
-          } catch {
-            lastErr = `Transient worker error (HTTP ${res.status}) — retrying…`;
-            json = null;
-            continue;
+        const paint = () => new Promise((r) => setTimeout(r, 30)); // let React paint between sync runs
+        // dynamic import: the engine joins the client bundle only when a CSV
+        // run actually happens
+        const core = await import("@/lib/ict/run-core");
+        const cfgOverrides = core.csvConfigFromUi(symbol, {
+          minRR: Number(minRR),
+          beMode,
+          ambiguity,
+          sessions: sessions ? sessions.split(",").map((s) => s.trim()).filter(Boolean) : [],
+          entryAnchor,
+          entryToleranceR: Number(entryTolerance),
+          maxCostPctOfR: Number(costGate),
+          obInvalidation,
+          obDisplacementFactor: Number(obDisp),
+          tierB: Number(tierB),
+          spread: spread === "" ? null : Number(spread),
+          slip: slip === "" ? null : Number(slip),
+          commBp: commBp === "" ? null : Number(commBp),
+        });
+        const runOpts = {
+          symbol: symbol as SymbolKey,
+          candles: csvCandles,
+          csvSummary: summary,
+          config: cfgOverrides,
+          strictness: strictness as Strictness,
+        };
+        const t0 = performance.now();
+        setRunStage(`Running ${Math.min(csvCandles.length, 25000).toLocaleString()} candles in your browser — nothing is uploaded…`);
+        await paint();
+        const base = core.runCsvBacktest(runOpts);
+        let sens: SensitivityRow[] | undefined;
+        if (sensitivity) {
+          sens = [];
+          for (const rr of [1.5, 2, 2.5, 3]) {
+            setRunStage(`minRR sensitivity ${rr}R…`);
+            await paint();
+            sens.push(core.sensitivityRowCsv(runOpts, rr, base));
           }
-          if (res.ok && json) break;
-          lastErr = typeof json?.error === "string" ? json.error : `HTTP ${res.status}`;
-          json = null;
         }
-        if (!json) throw new Error(lastErr);
-        setCompactMode(json.compact === true);
-        setResult(json as unknown as typeof result);
+        let comp: StrictnessComparisonRow[] | undefined;
+        let dimComp: DimensionComparison | undefined;
+        if (compare) {
+          if (compareDim === "strictness") {
+            comp = [];
+            for (const s of ["conservative", "balanced", "aggressive"] as const) {
+              setRunStage(`Strictness ${s}…`);
+              await paint();
+              comp.push(core.strictnessRowCsv(runOpts, s, base));
+            }
+          } else {
+            const rows: DimensionRow[] = [];
+            for (const step of core.dimensionPlan(compareDim)) {
+              setRunStage(`${step.label}…`);
+              await paint();
+              rows.push(core.toDimensionRow(step.label, step.description, core.runCsvBacktest({ ...runOpts, config: { ...cfgOverrides, ...step.over } })));
+            }
+            dimComp = { dimension: compareDim, rows };
+          }
+        }
+        setRunStage(null);
+        setResult({ ...base, sensitivity: sens, comparison: comp, dimensionComparison: dimComp, runtimeMs: Math.round(performance.now() - t0) });
         return;
       }
       const compact = bars > 5000;
@@ -419,25 +465,20 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
       setError(e instanceof Error ? e.message : "Backtest failed");
     } finally {
       setLoading(false);
+      setRunStage(null);
     }
   }
 
   async function loadTradeDetail(tradeId: string) {
-    if (!lastParamsRef.current) return;
+    // Only live-API deep windows need this (their compact responses strip the
+    // audit text to stay under the Worker ceiling). CSV runs execute locally
+    // and always carry the full audit for every trade.
+    if (dataSource === "csv" || !lastParamsRef.current) return;
     setDetailLoadingId(tradeId);
     try {
       const u = new URLSearchParams(lastParamsRef.current);
       u.set("tradeDetail", tradeId);
-      // CSV runs must replay the uploaded file — the GET endpoint only serves
-      // live-API windows, so POST the stored CSV to the csv route
-      const isCsvRun = dataSource === "csv" && lastCsvRef.current;
-      const res = isCsvRun
-        ? await fetch(`/api/backtest/csv?${u.toString()}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ csv: lastCsvRef.current, tradeDetail: tradeId }),
-          })
-        : await fetch(`/api/backtest?${u.toString()}`);
+      const res = await fetch(`/api/backtest?${u.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.trade) throw new Error(json.error ?? "Trade detail unavailable");
       const full = json.trade as TradeRecord;
@@ -529,7 +570,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             ))}
           </select>
           {dataSource === "api" && bars > 5000 && <p className="mt-1 text-[10px] text-muted-foreground">Deep windows are assembled from paginated API chunks (extra credits, slower first run, then cached 15 min).</p>}
-          {dataSource === "csv" && <p className="mt-1 text-[10px] text-muted-foreground">Interval + window are detected from the file — full history runs.</p>}
+          {dataSource === "csv" && <p className="mt-1 text-[10px] text-muted-foreground">Interval + window are detected from the file. CSV runs execute in YOUR browser — nothing is uploaded (engine window: most recent 25,000 candles).</p>}
         </div>
         <div>
           <label htmlFor="bt-strict" className="mb-1 block text-xs text-muted-foreground">Strictness</label>
@@ -667,11 +708,14 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         >
           {loading ? "Running…" : `Run backtest · ${symbol}${dataSource === "csv" ? " (CSV)" : ""}`}
         </Button>
+        {savedMsg && <span className="text-xs text-muted-foreground">{savedMsg}</span>}
         {result && user && (
           <Button variant="outline" className="h-9 border-border" onClick={saveRun}>Save run</Button>
         )}
-        {savedMsg && <span className="text-xs text-muted-foreground">{savedMsg}</span>}
       </div>
+      {loading && runStage && (
+        <p className="rounded-lg border border-[rgba(224,164,48,0.35)] bg-[rgba(224,164,48,0.06)] px-4 py-2 text-xs text-gold" role="status">{runStage}</p>
+      )}
       {dataSource === "csv" && csvPreview && (
         <div className="rounded-lg border border-border bg-card px-4 py-3 text-sm" role="status">
           <div className="flex flex-wrap items-center gap-2">
@@ -690,6 +734,11 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               {csvPreview.reSorted ? " · re-sorted to chronological" : ""}
             </span>
           </div>
+          {csvPreview.parsed >= 150 && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Ready — Run executes locally in your browser. Your file never leaves this device; large files take a few seconds, and every trade ships with its full audit trail.
+            </p>
+          )}
           {csvPreview.parsed < 150 && (
             <p className="mt-1 text-xs text-red-300">
               {csvPreview.granularity === "weekly" || csvPreview.granularity === "monthly"
@@ -750,6 +799,9 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-bold">Robustness: {flags.level}</span>
               <span className="rounded bg-background/40 px-2 py-0.5 text-xs font-semibold">Sample size: {result.sampleInfo.label} · {m.trades} trades</span>
+              {result.runtimeMs !== undefined && (
+                <span className="rounded bg-background/40 px-2 py-0.5 text-xs font-semibold">executed in-browser · {(result.runtimeMs / 1000).toFixed(1)}s</span>
+              )}
             </div>
             <p className="mt-1 text-xs opacity-90">{result.sampleInfo.note}</p>
             <ul className="mt-1 space-y-0.5 text-xs opacity-90">

@@ -521,3 +521,77 @@ Stage Summary:
   credits, no fetch shortfall, first REAL intraday backtest on uploaded data.
 - Committed + pushed to mahad717/tradepilot1 (Cloudflare CI deploys). The engine now
   has 21 years of headroom — user can explore older windows by trimming the file.
+
+---
+Task ID: 18
+Agent: Super Z (main agent)
+Task: "Transient worker error (HTTP 503)" — the deployed Worker killed the
+user's 24.9 MB XAU_15m_data.csv backtest upload. Make CSV runs survive the
+Worker's per-request CPU/memory ceiling — and never upload candle files at all.
+
+Work Log:
+- Diagnosis: the client POSTed the ENTIRE raw file ({ csv } body, 24.9 MB) to
+  /api/backtest/csv; the Worker then parsed 480,717 rows (~1.6 s CPU), capped
+  to 25,000 and ran the engine (~4 s CPU) inside one request. Cloudflare
+  Workers enforce a hard per-request CPU/memory budget → the isolate is
+  killed → the UI's fetch got a non-JSON 5xx and surfaced "Transient worker
+  error (HTTP 503) — retrying…". Retries could never fix it (deterministic
+  resource kill, not transience). Local dev (Node) had no ceiling, which is
+  why the dev-server run in Task 17 succeeded at 200/5.8 s.
+- Root design insight: the engine is pure TypeScript end-to-end below the
+  fetch orchestration. csv.ts was already isomorphic (client preview parses
+  the same file); sequence/execution/diagnostics/montecarlo/walkforward/
+  smtseries/costs never touch I/O. Only backtest.ts ("server-only") +
+  market/index.ts + twelvedata.ts are server-bound.
+- NEW src/lib/ict/run-core.ts — the PURE core moved out of backtest.ts
+  (BacktestResult/BacktestOptions, isWeekendGap, auditDataQuality, scanTrades,
+  runBacktestCore, debugCorePhases, comparison types) PLUS the new CSV
+  pipeline: runCsvBacktest (mirrors runBacktest's csvMode branch exactly:
+  same cfg merge, weekend hygiene, 150-candle granular refusals, 25k cap with
+  cloned-summary warning, SMT-disabled honesty), csvConfigFromUi (mirrors
+  params.ts buildConfig field-for-field incl. cost overrides), row-level
+  sensitivityRowCsv/strictnessRowCsv/dimensionPlan + toDimensionRow/
+  toStrictnessRow (browser UI interleaves paints between multi-second runs),
+  and all-in-one compareStrictnessCsv/compareDimensionCsv/minRRSensitivityCsv.
+- NEW src/lib/market/weekends.ts (pure) — isWeekendCandle/dropWeekendCandles
+  moved out of the server-only market index, which now re-exports them.
+- backtest.ts slimmed to the server-only fetch orchestrator (runBacktest,
+  compareStrictness, compareDimension) + `export * from "./run-core"` so
+  validate.ts, both API routes and selftest keep their import paths.
+- backtest-tab.tsx: the CSV run branch now executes LOCALLY — parsed candles
+  live in a ref (the 25 MB text is never kept in state, never uploaded), the
+  engine is `await import("@/lib/ict/run-core")` (code-split: engine lands in
+  an 88 KB lazy chunk, page chunk gains zero engine symbols, no TwelveData
+  key in client chunks), base run → optional minRR sensitivity → optional
+  compare dimension run sequentially with paint gaps and a live stage line
+  ("minRR sensitivity 2R…"). Full audit/confluence trails stay on every trade
+  (compactMode forced false; loadTradeDetail is now API-runs-only). UI copy:
+  "CSV runs execute in YOUR browser — nothing is uploaded", preview panel
+  "Ready — Run executes locally…", results banner chip "executed in-browser ·
+  Ns".
+- VALIDATION: scripts/test-client-run.mts — 32/32 checks: real 24.9 MB file
+  parses 480,717 candles in ~1.5 s; runCsvBacktest → 25,000-bar window, 161
+  trades in ~3.6 s (matches Task 17); fetch shortfall structurally 0; SMT
+  disabled note; cap warning appended to a CLONE (original summary state not
+  mutated); full audit trails on every trade; walk-forward + Monte Carlo
+  present; determinism (two runs identical); monthly + sub-150 refusal
+  messages; helper shapes; cost-override shape; and SERVER PARITY — the same
+  file + knobs POSTed to /api/backtest/csv returns IDENTICAL trades/netR/
+  winRate/PF/first-trade/funnel. Selftest endpoint 25/25; parser suite ALL
+  PASS (renamed .mts — it is Bun-flavored); tsc + eslint clean on touched
+  files; production build clean (server-only boundary intact).
+- LIVE E2E (headless Chromium vs dev server): dashboard → Backtesting →
+  Uploaded CSV → choose XAU_15m_data.csv → preview "480717 candles · 15m
+  detected · 2004-06-11 → 2025-09-30" → Run → YELLOW banner, STRONGER SAMPLE
+  · 161 trades, "executed in-browser · 2.5 s", trade audit logs render, zero
+  page errors. Screenshot: upload/csv-browser-run-success.png.
+
+Stage Summary:
+- The Worker never sees uploaded candle files anymore: CSV backtests are
+  computed in the user's browser, so the 503 class of failure is structurally
+  impossible for them — 25k candles in ~2.5 s, full audits included, files
+  stay on-device (privacy bonus). TwelveData runs (server) are unchanged.
+- Files: src/lib/ict/run-core.ts (new), src/lib/market/weekends.ts (new),
+  backtest.ts (slimmed), market/index.ts (re-export), backtest-tab.tsx (local
+  CSV runs + UX), scripts/test-client-run.mts (new), scripts/test-csv-parser
+  renamed .mts. Pushed to mahad717/tradepilot1 → Cloudflare CI auto-deploys.
