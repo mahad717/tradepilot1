@@ -1,11 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Bell, BellRing } from "lucide-react";
 import { ChartPanel } from "./chart-panel";
 import { AnalysisPanel } from "./analysis-panel";
 import { SignalsTab, type SavedSignalRow } from "./signals-tab";
 import { BacktestTab } from "./backtest-tab";
 import { SmtTab } from "./smt-tab";
+import { useSignalAlerts } from "./use-signal-alerts";
 import { useAuth } from "./auth-provider";
 import { fmtPrice, fmtPct } from "./format";
 import type { Candle, DataSource, IntervalKey, SymbolKey } from "@/lib/market/types";
@@ -166,6 +168,21 @@ export function Terminal() {
     [symbol]
   );
 
+  // ---- new-signal notifications (browser Notification + in-app toast) ----
+  const alerts = useSignalAlerts({
+    symbol,
+    interval,
+    onActivate: () => setTab("signals"),
+  });
+  const alertTitle =
+    alerts.permission === "unsupported"
+      ? "Desktop notifications aren't supported in this browser"
+      : alerts.permission === "denied"
+        ? "Notifications are blocked — allow them in browser settings, then toggle again"
+        : alerts.enabled
+          ? "Signal alerts ON — you'll be notified the moment a new signal drops while this page is open (works in background tabs too)"
+          : "Notify me when a new signal drops";
+
   return (
     <div className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6">
       {/* ---- instrument bar ---- */}
@@ -200,6 +217,21 @@ export function Terminal() {
             </button>
           ))}
         </div>
+
+        <button
+          type="button"
+          onClick={() => void alerts.toggle()}
+          aria-pressed={alerts.enabled}
+          title={alertTitle}
+          className={`inline-flex min-h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition-colors ${
+            alerts.enabled
+              ? "border-gold/60 bg-gold/10 text-gold"
+              : "border-border bg-muted/30 text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {alerts.enabled ? <BellRing className="h-4 w-4" aria-hidden /> : <Bell className="h-4 w-4" aria-hidden />}
+          <span className="hidden sm:inline">{alerts.enabled ? "Alerts on" : "Alert me"}</span>
+        </button>
 
         <div className="ml-auto flex items-baseline gap-2">
           <span className="font-mono text-2xl font-bold tabular-nums">{fmtPrice(price)}</span>

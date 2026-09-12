@@ -690,3 +690,21 @@ Stage Summary:
 - Fourth consecutive improvement round, all metrics at MORE trades: Best preset 91→104 trades, 80.2→87.5% WR, +20.70→+27.28R, PF 17.43→31.65, DD 0.26→0.23R; OOS +9.03→+11.78R; unseen windows nearly double/triple (W2 +3.10→+5.98R, W3 +1.82→+6.01R). Cumulative arc: 71→79→91→104 trades at 74.6→75.9→80.2→87.5% WR.
 - The tolerance lever is now saturated at the product's fill-realism ceiling (0.25R) on BOTH aggressive presets; kill zones needed the extra 30% TP2 share (30/35/35) plus a slightly lower B-floor (65) to convert last-look fills at 87.5%. Held-but-measured: 0.3R would read ~89.5%/+28.02R, 0.4R ~94.5%/+33.50R with 72-82% phantom fill share — documented, not shipped.
 - Engine defaults deliberately untouched this round (still the Task-20 champion); preset layer carries the divergence, keeping the no-UI API path at the conservative read.
+
+---
+Task ID: 23
+Agent: main (Super Z)
+Task: "I want to receive a notification when a new signal drops, don't change anything else" — add new-signal notifications with zero changes to engine/API/presets.
+
+Work Log:
+- surveyed the flow: signals are computed ON DEMAND by GET /api/signals (generateSignals, last CLOSED bar, no repaint); ids embed the generation minute (Math.floor(Date.now()/60000)) and createdAt resets every call → "new" must be detected by a STABLE SETUP FINGERPRINT (side|entry|stopLoss|targets), never by id.
+- NEW src/components/terminal/use-signal-alerts.ts: client-side watcher hook — 60s poll of the same public endpoint (response is Cache-Control private max-age=60, so provider load stays ~1 computation/min, same order as a user refreshing manually); per-symbol+interval seen-fingerprint sets persisted in localStorage (tp.signalAlerts.*, cap 50, evict-oldest) so reloads and symbol switches never double-alert; first poll after enable/switch = silent baseline; on a genuinely new fingerprint: Web Notification (tag = fingerprint, click focuses window + jumps to the Signals tab) + in-app toast (global Toaster) + two-tone WebAudio blip when the tab is hidden.
+- toggle UX: "Alert me / Alerts on" bell in the terminal instrument bar (lucide Bell/BellRing, gold active state, permission-aware tooltip); requests Notification.requestPermission() from the click; blocked/unsupported states surface a toast explaining the fix; enabled state persists across visits and auto-resumes when permission is already granted.
+- SCOPE HONESTY: delivery works while the terminal page is open in any browser tab (background tabs included — timer throttling ~1/min matches the poll cadence). Closed-browser push would need VAPID + a subscription store + secrets — deliberately NOT added (would violate "don't change anything else" and can't be provisioned from this environment).
+- fixed en route: AlertPermission alias (collided with DOM PermissionState), control-flow narrowing on `let next` (needed explicit annotation), ref-write-in-render → effect, react-hooks/set-state-in-effect disable with justification (localStorage hydration is the legitimate pattern).
+- VERIFIED: tsc — no new errors (4 pre-existing unrelated); eslint clean on both touched files; next build clean; test-best-settings still 35/35 (engine bit-exact guard untouched).
+- Files: src/components/terminal/use-signal-alerts.ts (new), src/components/terminal/terminal.tsx (hook wiring + bell button — the ONLY existing file touched). Engine, API routes, presets, backtest: ZERO changes.
+
+Stage Summary:
+- Users can now opt in to "Alert me" on the terminal: when a new live signal fingerprint drops for the selected symbol+interval while the page is open, they get a desktop notification + toast + audible blip; clicking it lands on the Signals tab. Nothing else about the product changed — no engine defaults, no presets, no API.
+- Fingerprint-based dedupe means a setup that persists across re-evaluations of the same bar never spams; a changed entry/stop/target (a materially different signal) re-alerts once.
