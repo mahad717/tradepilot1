@@ -26,6 +26,7 @@ import {
   type Strictness,
 } from "./sequence";
 import { simulateTrade, type ExecuteConfig } from "./execution";
+import type { SeriesContext } from "./sequence";
 import {
   computeMetrics, lossReasonTable, mfeMaeAnalysis, robustnessFlags, buildReport,
   funnelStages, rejectionTable, modelPerformance, rrDiagnostics, sessionDiagnostics,
@@ -273,6 +274,128 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   return result;
 }
 
+/**
+ * The flat→setup→pending-order loop, extracted so the debug phase-timer can
+ * time the scan in isolation (deep-window 1102 localization).
+ */
+function scanTrades(
+  ctx: SeriesContext,
+  candles: Candle[],
+  cfg: EngineConfig,
+  execute: ExecuteConfig,
+  executeOpts: { ltfCandles?: Candle[]; ltfSeconds?: number; parentSeconds?: number }
+): { trades: TradeRecord[]; pendingTelemetry: PendingTelemetryInput[]; ambiguityCollisions: number } {
+  const trades: TradeRecord[] = [];
+  const pendingTelemetry: PendingTelemetryInput[] = [];
+  let ambiguityCollisions = 0;
+  const cooldown: CooldownState = {
+    usedSweepKeys: new Set(),
+    blacklistedZones: new Set(),
+    lastSignalIndex: -Infinity,
+  };
+
+  const start = Math.min(cfg.warmupBars, Math.max(0, candles.length - 50));
+  let i = start;
+  while (i < candles.length) {
+    // flat — look for a new setup on bar i close
+    const { setup } = buildSetupAt(ctx, i, cfg, cooldown);
+    if (!setup || setup.tier === "NO_TRADE") {
+      i++;
+      continue;
+    }
+    // cooldown gate (spec #17) — recorded as a rejection for diagnostics
+    if (i - cooldown.lastSignalIndex < cfg.minBarsBetweenSignals) {
+      ctx.diag.rejections.set("COOLDOWN", (ctx.diag.rejections.get("COOLDOWN") ?? 0) + 1);
+      ctx.diag.primary.set("COOLDOWN", (ctx.diag.primary.get("COOLDOWN") ?? 0) + 1);
+      i++;
+      continue;
+    }
+    cooldown.lastSignalIndex = i;
+    cooldown.usedSweepKeys.add(setup.sweepKey);
+    ctx.funnel.ordersPlaced++;
+
+    const res = simulateTrade(candles, setup, execute, symbolOf(ctx), intervalOf(ctx), executeOpts);
+    pendingTelemetry.push(res.pending);
+    ambiguityCollisions += res.ambiguousBars;
+    if (res.filled && res.trade) {
+      trades.push(res.trade);
+      ctx.funnel.ordersFilled++;
+      ctx.funnel.tradesClosed++;
+      if (res.trade.netR < 0 && cfg.sameZoneCooldown) {
+        cooldown.blacklistedZones.add(res.trade.zoneId);
+      }
+    } else {
+      // limit order never filled → the retracement never happened
+      ctx.funnel.ordersExpired++;
+      ctx.diag.rejections.set("SETUP_EXPIRED", (ctx.diag.rejections.get("SETUP_EXPIRED") ?? 0) + 1);
+      ctx.diag.primary.set("SETUP_EXPIRED", (ctx.diag.primary.get("SETUP_EXPIRED") ?? 0) + 1);
+    }
+    i = Math.max(res.endIndex + 1, i + 1);
+  }
+  return { trades, pendingTelemetry, ambiguityCollisions };
+}
+
+// ctx carries symbol/interval for simulateTrade's trade-id prefix
+function symbolOf(ctx: SeriesContext): SymbolKey {
+  return ctx.symbol;
+}
+function intervalOf(ctx: SeriesContext): IntervalKey {
+  return ctx.interval;
+}
+
+/**
+ * Debug phase-timer for the deep-window resource investigation: times each
+ * engine phase in isolation on REAL data. Small payload — returns even when
+ * the full run would exceed the Worker CPU cap.
+ */
+export function debugCorePhases(
+  symbol: SymbolKey,
+  interval: IntervalKey,
+  candles: Candle[],
+  smtEvents: SmtEvent[],
+  config: Partial<EngineConfig>,
+  strictness: Strictness = "balanced"
+): Record<string, number> {
+  const cfg: EngineConfig = { ...DEFAULT_CONFIG, ...presetFor(strictness), ...config };
+  if (!cfg.costs.XAUUSD) cfg.costs = { ...DEFAULT_COSTS };
+  const timings: Record<string, number> = { bars: candles.length };
+  let t0 = Date.now();
+  const ctx = buildSeriesContext(symbol, interval, candles, smtEvents, cfg.obInvalidation, cfg.obDisplacementFactor);
+  timings.buildSeriesContextMs = Date.now() - t0;
+  timings.zones = ctx.zones.length;
+  timings.sweeps = ctx.sweeps.length;
+  timings.pools = ctx.pools.length;
+
+  const execute: ExecuteConfig = {
+    beMode: cfg.beMode,
+    beTriggerR: cfg.beTriggerR,
+    partialShares: cfg.partialShares,
+    maxHoldBars: cfg.maxHoldBars,
+    orderExpiryBars: cfg.orderExpiryBars,
+    ambiguity: cfg.ambiguity,
+    randomSeed: cfg.randomSeed,
+    riskMoney: cfg.riskMoney,
+    costs: cfg.costs[symbol] ?? DEFAULT_COSTS[symbol],
+    entryToleranceR: cfg.entryToleranceR,
+  };
+  const executeOpts = { parentSeconds: ctx.intervalSec };
+
+  t0 = Date.now();
+  const scan = scanTrades(ctx, candles, cfg, execute, executeOpts);
+  timings.scanMs = Date.now() - t0;
+  timings.ordersPlaced = ctx.funnel.ordersPlaced;
+  timings.trades = scan.trades.length;
+
+  t0 = Date.now();
+  const metrics = computeMetrics(scan.trades);
+  const wf = walkForward(scan.trades, candles.length, cfg.warmupBars, 5);
+  const mc = scan.trades.length >= 5 ? runMonteCarlo(scan.trades.map((t) => t.netR), 1000, cfg.randomSeed) : null;
+  timings.postMs = Date.now() - t0;
+  timings.mcPaths = mc ? 1000 : 0;
+  timings.netR = Math.round(metrics.netR * 100) / 100;
+  return timings;
+}
+
 function intervalSecondsOf(interval: IntervalKey): number {
   switch (interval) {
     case "5min": return 300;
@@ -315,53 +438,10 @@ export function runBacktestCore(
   };
   const executeOpts = { ltfCandles, ltfSeconds, parentSeconds: ctx.intervalSec };
 
-  const trades: TradeRecord[] = [];
-  const pendingTelemetry: PendingTelemetryInput[] = [];
-  let ambiguityCollisions = 0;
-  const cooldown: CooldownState = {
-    usedSweepKeys: new Set(),
-    blacklistedZones: new Set(),
-    lastSignalIndex: -Infinity,
-  };
-
-  const start = Math.min(cfg.warmupBars, Math.max(0, candles.length - 50));
-  let i = start;
-  while (i < candles.length) {
-    // flat — look for a new setup on bar i close
-    const { setup } = buildSetupAt(ctx, i, cfg, cooldown);
-    if (!setup || setup.tier === "NO_TRADE") {
-      i++;
-      continue;
-    }
-    // cooldown gate (spec #17) — recorded as a rejection for diagnostics
-    if (i - cooldown.lastSignalIndex < cfg.minBarsBetweenSignals) {
-      ctx.diag.rejections.set("COOLDOWN", (ctx.diag.rejections.get("COOLDOWN") ?? 0) + 1);
-      ctx.diag.primary.set("COOLDOWN", (ctx.diag.primary.get("COOLDOWN") ?? 0) + 1);
-      i++;
-      continue;
-    }
-    cooldown.lastSignalIndex = i;
-    cooldown.usedSweepKeys.add(setup.sweepKey);
-    ctx.funnel.ordersPlaced++;
-
-    const res = simulateTrade(candles, setup, execute, symbol, interval, executeOpts);
-    pendingTelemetry.push(res.pending);
-    ambiguityCollisions += res.ambiguousBars;
-    if (res.filled && res.trade) {
-      trades.push(res.trade);
-      ctx.funnel.ordersFilled++;
-      ctx.funnel.tradesClosed++;
-      if (res.trade.netR < 0 && cfg.sameZoneCooldown) {
-        cooldown.blacklistedZones.add(res.trade.zoneId);
-      }
-    } else {
-      // limit order never filled → the retracement never happened
-      ctx.funnel.ordersExpired++;
-      ctx.diag.rejections.set("SETUP_EXPIRED", (ctx.diag.rejections.get("SETUP_EXPIRED") ?? 0) + 1);
-      ctx.diag.primary.set("SETUP_EXPIRED", (ctx.diag.primary.get("SETUP_EXPIRED") ?? 0) + 1);
-    }
-    i = Math.max(res.endIndex + 1, i + 1);
-  }
+  const scan = scanTrades(ctx, candles, cfg, execute, executeOpts);
+  const trades = scan.trades;
+  const pendingTelemetry = scan.pendingTelemetry;
+  const ambiguityCollisions = scan.ambiguityCollisions;
 
   // tag losers for diagnostics (SMT attribution only when SMT was live —
   // "no-smt" on 100% of losers is noise when the gate is unavailable for all)

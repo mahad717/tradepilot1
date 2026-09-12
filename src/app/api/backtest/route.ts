@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { runBacktest, compareStrictness, compareDimension, type StrictnessComparisonRow, type CompareDimension } from "@/lib/ict/backtest";
+import { runBacktest, compareStrictness, compareDimension, debugCorePhases, type StrictnessComparisonRow, type CompareDimension } from "@/lib/ict/backtest";
 import type { Strictness } from "@/lib/ict/sequence";
 import type { EngineConfig } from "@/lib/ict/sequence";
 import { DEFAULT_COSTS } from "@/lib/ict/costs";
@@ -190,6 +190,16 @@ export async function GET(req: Request) {
     }
     if (stageParam === "core") {
       const t0 = Date.now();
+      if (searchParams.get("dbg") === "1") {
+        // phase-by-phase timings on the real window (small payload) — used to
+        // localize deep-window Worker CPU exhaustion
+        const fetchRes2 = bars > 5000
+          ? await getCandlesDeep(symbol, interval, bars)
+          : await getCandles(symbol, interval, bars);
+        const candles2 = dropWeekendCandles(fetchRes2.candles).candles;
+        const timings = debugCorePhases(symbol, interval, candles2, [], buildConfig(), strictness);
+        return NextResponse.json({ stage: "core-dbg", bars: candles2.length, timings });
+      }
       const result = await runBacktest({ symbol, interval, bars, strictness, config: buildConfig() });
       const c0 = Date.now();
       const payload = JSON.stringify(result);
