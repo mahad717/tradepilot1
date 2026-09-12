@@ -258,3 +258,63 @@ Stage Summary:
   that invalidation is ruled out), SMT bonus weighting by measured alignment
   frequency (only if it proves to over-fire), revisit tolerance default after
   user decision on generous-fill assumptions.
+
+---
+Task ID: 13
+Agent: Super Z (main agent)
+Task: "Improve — best possible results" — engine v7: OB creation-side scan,
+SMT honesty split, editable cost model; then un-block deep windows (Worker CPU).
+
+Work Log:
+- P3-1 OB displacement knob: EngineConfig.obDisplacementFactor (default 1.2)
+  threaded through buildSeriesContext -> detectOrderBlocks; route param obDisp
+  (0.5-3); UI select; OB-pipeline panel title + note echo the active factor.
+- P3-2 compare dimension "obDisplacement" (0.8/1.0/1.2/1.5). NOTE: compare=1
+  with this dim at 5000 bars hits the Worker CPU limit (5 runs/request); the
+  factor variants as separate single runs work and were used for the scan.
+- P3-3 SMT split: smtSplitOf(trades) -> BacktestResult.smtSplit (null when no
+  live companion); UI table in the SMT panel with honest small-sample notes.
+- P3-4 editable cost model: route params spread/slip/commBp override
+  cfg.costs[symbol]; UI numeric inputs (empty = defaults); route GET now builds
+  ONE config object shared by main + sensitivity + comparison runs (also fixed
+  sensitivity runs silently ignoring targetHorizonR).
+- Self-tests 21-23 -> 23/23: displacement knob controls creation; cost override
+  reaches accounting AND the gate ($5 spread + 0.01R gate -> 0 trades);
+  mitigation range-queries equivalence (200 randomized trials, 0 mismatches).
+- REAL-DATA FINDINGS (XAUUSD 15m, balanced, scripts/v7-*.json):
+  * OB displacement scan (5000 bars): 1.2x -> 178 OBs/20 candidates/0 Model C,
+    +1.44R PF 1.25; 0.8x -> 395 OBs/40 candidates/Model C 1 trade, +2.05R PF
+    1.37; 1.5x -> 80 OBs/14 candidates, +3.57R PF 1.62 (trade sets stay mostly
+    Model B; looser creation adds candidates, some become better trades).
+  * SMT split: 5000b aligned 16t -0.01R exp vs not-aligned 7t +0.22R; deep
+    15000 aligned 66t +0.19R vs not-aligned 24t +0.32R -> on BOTH windows the
+    +5 SMT bonus does not pay for itself (underperform 0.13-0.23R). No param
+    changed — the panel now shows this so the bonus can be judged honestly.
+  * Deep 15000: full 15000/15000 received (0% shortfall, 3 chunk requests),
+    90 trades, 61.1% WR, +0.22R exp, net +19.96R, PF 2.69, DD 3.38R, OOS
+    period structure YELLOW.
+- DEPLOYMENT BUG HUNT (deep runs returned Cloudflare 1102 all session): local
+  profiling (scripts/profile-deep.ts, profile-context.ts) showed engine CPU
+  921ms at 11.7k bars. Fixed two O(n x window) hot spots:
+  * zones.ts: RangeExtreme sparse tables + firstMitigationIndex() — the FVG/OB
+    mitigation scans (O(zones x bars)) now answer first-death in O(log n);
+    obInvalidated kept for single-candle checks.
+  * volatility.ts volRegimeSeries + regime.ts marketRegimeSeries: per-bar
+    slice+sort (200-el) -> rolling sorted windows; incremental Kaufman path.
+  * Result: buildSeriesContext 765->157ms, end-to-end 921->329ms; after
+    deploy the deep 15000 run completes again.
+  * Equivalence proven twice on real data: pre/post trade lists byte-identical
+    on shared signalTimes (23/23), plus randomized tree-vs-linear test 23.
+- Commits: 5177ce4 (engine v7), 70f4507 (sparse-table mitigation), 9f9ce4b
+  (rolling windows). All pushed; Cloudflare CI deployed each; prod selftest
+  23/23 verified.
+
+Stage Summary:
+- Engine v7 = three new decision levers (OB creation scan, SMT verdict split,
+  editable cost model) + deep windows un-blocked with 3x less Worker CPU.
+- The SMT split evidence argues the +5 bonus is currently NOT justified
+  (aligned <= not-aligned on both windows); left in place, surfaced honestly —
+  candidate for a weighting change ONLY if the user decides the proxy pairing
+  should be re-weighted, not from silent tuning.
+- Known deployment fragility: compare=1 requests at 5000 bars can still hit
+  Worker CPU limits (5 runs per request); single runs are fine.
