@@ -649,7 +649,7 @@ export async function compareStrictness(
 // costs, entry placement and target realism.
 // ---------------------------------------------------------------------------
 
-export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry" | "obInvalidation" | "obDisplacement";
+export type CompareDimension = "strictness" | "expiry" | "sessions" | "entry" | "be" | "obInvalidation" | "obDisplacement";
 
 export interface DimensionRow {
   label: string;
@@ -712,9 +712,21 @@ export async function compareDimension(
   }
   if (dimension === "entry") {
     const rows = await Promise.all([
-      run("Edge + strict", "limit at the proximal edge, no tolerance (current default)", { entryAnchor: "edge", entryToleranceR: 0 }),
-      run("Edge + 0.05R tolerance", "marketable last-look within 0.05R of the edge limit", { entryAnchor: "edge", entryToleranceR: 0.05 }),
+      run("Edge + strict", "limit at the proximal edge, no tolerance (honest-touch baseline)", { entryAnchor: "edge", entryToleranceR: 0 }),
+      run("Edge + 0.05R tolerance", "marketable last-look within 0.05R of the edge limit (current default)", { entryAnchor: "edge", entryToleranceR: 0.05 }),
       run("Midpoint + strict", "limit at the zone midpoint — deeper fill, worse location", { entryAnchor: "midpoint", entryToleranceR: 0 }),
+    ]);
+    return { dimension, rows };
+  }
+  if (dimension === "be") {
+    // The breakeven-rule experiment — what happens to the position after TP1.
+    // Same fills in every row (BE never changes entries), so any win-rate
+    // difference is pure management, not selection.
+    const rows = await Promise.all([
+      run("TP1 → entry (plain BE)", "stop to entry after TP1 — scratch, before costs", { beMode: "tp1" }),
+      run("TP1 → entry + costs (BE+)", "stop locks the round-trip cost buffer on the remaining shares — worst case after TP1 is a small net win (current default)", { beMode: "tp1cost" }),
+      run("risk1 @ +0.5R trigger", "stop to entry once prior-bar MFE reached +0.5R (also covers trades that miss TP1)", { beMode: "risk1", beTriggerR: 0.5 }),
+      run("Structural", "stop to the last confirmed swing beyond entry", { beMode: "structural" }),
     ]);
     return { dimension, rows };
   }

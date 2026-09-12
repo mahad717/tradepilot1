@@ -170,7 +170,7 @@ export type MarketRegime =
   | "CONSOLIDATION"
   | "UNCLEAR";
 
-export type BreakevenMode = "off" | "tp1" | "risk1" | "structural";
+export type BreakevenMode = "off" | "tp1" | "tp1cost" | "risk1" | "structural";
 
 export type AmbiguityModel = "pessimistic" | "optimistic" | "randomized" | "ltf";
 

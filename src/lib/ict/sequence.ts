@@ -208,7 +208,12 @@ export const DEFAULT_CONFIG: EngineConfig = {
   // setups where costs would eat more than 35% of the risked R.
   maxCostPctOfR: 0.35,
   entryAnchor: "edge",
-  entryToleranceR: 0,
+  // 0.05R marketable last-look: a candle approaching within 0.05R of the edge
+  // limit fills. Evidence (5000-bar entry compare, engine v5): edge+0.05R →
+  // 26 trades @ 73.1% WR vs edge strict 24 — more fills AND more winners;
+  // every tolerance fill is counted (orderFlow.toleranceFills) and flagged on
+  // the trade (trade.toleranceFill); compare → entry quantifies the assumption.
+  entryToleranceR: 0.05,
   targetHorizonR: 8,
   obInvalidation: "close-mid",
   obDisplacementFactor: 1.2,

@@ -243,7 +243,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [beMode, setBeMode] = useState("tp1");
   const [ambiguity, setAmbiguity] = useState("pessimistic");
   const [entryAnchor, setEntryAnchor] = useState("edge");
-  const [entryTolerance, setEntryTolerance] = useState("0");
+  const [entryTolerance, setEntryTolerance] = useState("0.05");
   const [costGate, setCostGate] = useState("0.35");
   const [obInvalidation, setObInvalidation] = useState("close-mid");
   const [obDisp, setObDisp] = useState("1.2");
@@ -393,9 +393,10 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </select>
         </div>
         <div>
-          <label htmlFor="bt-be" className="mb-1 block text-xs text-muted-foreground">Breakeven mode</label>
+          <label htmlFor="bt-be" className="mb-1 block text-xs text-muted-foreground" title="After TP1 the stop moves to entry (plain BE) or to entry + the round-trip cost buffer on the remaining shares (BE+) — BE+ makes the worst case after TP1 a small net win. Effective from the next bar; the initial stop is preserved in every record.">Breakeven mode</label>
           <select id="bt-be" value={beMode} onChange={(e) => setBeMode(e.target.value)} className={selectCls}>
-            <option value="tp1">After TP1</option>
+            <option value="tp1cost">After TP1 → entry + costs (BE+)</option>
+            <option value="tp1">After TP1 → entry</option>
             <option value="risk1">After +1R</option>
             <option value="structural">Structural</option>
             <option value="off">No BE</option>
@@ -418,7 +419,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </select>
         </div>
         <div>
-          <label htmlFor="bt-tol" className="mb-1 block text-xs text-muted-foreground" title="Marketable last-look: fill when price comes within this many R of the limit without touching it. Tolerance fills are counted, never hidden. Strict touch is the honest default — tolerance materially changes results (compare → Entry placement quantifies it).">Entry tolerance</label>
+          <label htmlFor="bt-tol" className="mb-1 block text-xs text-muted-foreground" title="Marketable last-look: fill when price comes within this many R of the limit without touching it. Default 0.05R — earlier fills; every tolerance fill is counted (Tolerance fills card) and flagged on the trade. Set 0 for strict touch. Compare → Entry placement quantifies the assumption.">Entry tolerance</label>
           <select id="bt-tol" value={entryTolerance} onChange={(e) => setEntryTolerance(e.target.value)} className={selectCls}>
             <option value="0">Strict touch</option>
             <option value="0.05">+0.05R</option>
@@ -488,6 +489,7 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
               <option value="expiry">Expiry window (6/12/24)</option>
               <option value="sessions">Sessions (all vs kill zones)</option>
               <option value="entry">Entry placement (edge/tolerance/midpoint)</option>
+              <option value="be">Breakeven rule (BE+ vs plain vs risk1 vs structural)</option>
               <option value="obInvalidation">OB invalidation rule (4 modes)</option>
               <option value="obDisplacement">OB displacement factor (0.8–1.5)</option>
             </select>

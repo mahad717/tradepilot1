@@ -10,11 +10,11 @@ import { isIntervalKey, isSymbolKey } from "@/lib/market";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const BE_MODES = ["off", "tp1", "risk1", "structural"];
+const BE_MODES = ["off", "tp1", "tp1cost", "risk1", "structural"];
 const AMBIGUITY_MODES = ["pessimistic", "optimistic", "randomized", "ltf"];
 const SESSION_KEYS = ["asia", "london", "ny-am", "ny-pm", "london-close"];
 const STRICTNESS_LEVELS = ["conservative", "balanced", "aggressive"];
-const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "obInvalidation", "obDisplacement"];
+const COMPARE_DIMENSIONS = ["strictness", "expiry", "sessions", "entry", "be", "obInvalidation", "obDisplacement"];
 const OB_INVALIDATION_MODES = ["close-mid", "wick-mid", "close-distal", "wick-distal"];
 
 /**
@@ -31,7 +31,7 @@ async function resolveDb() {
 
 /**
  * GET /api/backtest — engine v3.
- * Params: symbol, interval, bars, minRR, beMode, ambiguity, sessions,
+ * Params: symbol, interval, bars, minRR, beMode (off|tp1|tp1cost|risk1|structural), ambiguity, sessions,
  *         strictness (conservative|balanced|aggressive), compare (0|1),
  *         compareDim, entryAnchor, entryTolerance, costGate, horizon,
  *         obInvalidation, obDisp, tierB,
@@ -50,7 +50,7 @@ export async function GET(req: Request) {
   const sessionsParam = searchParams.get("sessions") ?? "";
   const strictnessParam = searchParams.get("strictness") ?? "balanced";
   const entryAnchorParam = searchParams.get("entryAnchor") ?? "edge";
-  const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0");
+  const entryToleranceParam = Number(searchParams.get("entryTolerance") ?? "0.05");
   const costGateParam = Number(searchParams.get("costGate") ?? "0.35");
   const horizonParam = Number(searchParams.get("horizon") ?? "8");
   const obInvalidationParam = searchParams.get("obInvalidation") ?? "close-mid";
@@ -86,7 +86,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unknown strictness preset" }, { status: 400 });
   }
   if (!COMPARE_DIMENSIONS.includes(compareDimParam)) {
-    return NextResponse.json({ error: "Unknown compareDim (strictness|expiry|sessions|entry|obInvalidation)" }, { status: 400 });
+    return NextResponse.json({ error: "Unknown compareDim (strictness|expiry|sessions|entry|be|obInvalidation)" }, { status: 400 });
   }
   if (!OB_INVALIDATION_MODES.includes(obInvalidationParam)) {
     return NextResponse.json({ error: "obInvalidation must be close-mid|wick-mid|close-distal|wick-distal" }, { status: 400 });

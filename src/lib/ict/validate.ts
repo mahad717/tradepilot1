@@ -620,6 +620,32 @@ export function runAllTests(): TestResult[] {
     );
   }
 
+  // ---- 24. BE+ (tp1cost): worst case after TP1 covers round-trip costs ----
+  {
+    const candles = mkCandles(Tp1BeCandles);
+    const res = simulateTrade(candles, mkSetup(), execConfig({ beMode: "tp1cost", costs: REAL_COSTS }), "XAUUSD", "15min");
+    const t = res.trade;
+    // RT cost per unit at fill = 2 × (0.35 + 0.0001×100) = 0.72 price units;
+    // remaining share after TP1 = 0.5 → buffer = 0.72/0.5 = 1.44 units →
+    // stop 101.44 (+0.72R raw on the remaining 50%). Bar 8 returns through
+    // the buffer → BE+ leg +0.36R weighted → gross 1.11R, net ≈ +0.75R even
+    // though price came back to entry (plain BE nets +0.39R here).
+    const pass =
+      !!t &&
+      t.outcome === "TP1_BE" &&
+      Math.abs(t.currentStop - 101.44) < 1e-9 &&
+      Math.abs((t.breakevenStop ?? 0) - 101.44) < 1e-9 &&
+      Math.abs(t.grossR - 1.11) < 1e-9 &&
+      Math.abs(t.netR - 0.75) < 0.005;
+    add(
+      "BE+ (tp1cost): stop covers round-trip costs after TP1",
+      pass,
+      t
+        ? `stop=${t.currentStop} (entry 100 + 0.72 RT cost / 0.5 remaining = 1.44); gross=${t.grossR}R net=${t.netR}R (plain BE would net +0.39R) — cost-dragged TP1 retraces become wins`
+        : "trade did not fill"
+    );
+  }
+
   return results;
 }
 

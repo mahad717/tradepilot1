@@ -371,6 +371,17 @@ export function simulateTrade(
         stopLabel = "BREAKEVEN_STOP";
         beActivatedTime = c.time;
         audit.push({ time: c.time, event: "Breakeven activated", detail: `SL moved to entry ${fillPrice.toFixed(2)} after TP1 (effective next bar) — initial SL ${setup.initialStop.toFixed(2)} preserved in the record` });
+      } else if (cfg.beMode === "tp1cost" && tp1Hit) {
+        // BE+ : move the stop far enough above entry that the REMAINING shares,
+        // if stopped, pay the WHOLE trade's round-trip costs — the worst case
+        // after TP1 becomes a small net win instead of a cost-dragged scratch.
+        const rtPrice = 2 * fillCost(cfg.costs, fillPrice, 1).priceUnits; // per-unit round trip, price units
+        const buf = rtPrice / remainingShare;
+        breakevenStop = fillPrice + dir * buf;
+        currentStop = breakevenStop;
+        stopLabel = "BREAKEVEN_STOP";
+        beActivatedTime = c.time;
+        audit.push({ time: c.time, event: "Breakeven activated", detail: `BE+: SL moved to entry + round-trip costs ${fillPrice.toFixed(2)} + ${buf.toFixed(2)} units (+${(buf / risk).toFixed(2)}R on the remaining ${(remainingShare * 100).toFixed(0)}%) after TP1 (effective next bar) — worst case now covers all costs; initial SL ${setup.initialStop.toFixed(2)} preserved in the record` });
       } else if (cfg.beMode === "risk1" && mfeThroughPrevBar >= cfg.beTriggerR) {
         breakevenStop = fillPrice;
         currentStop = fillPrice;
