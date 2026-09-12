@@ -180,11 +180,13 @@ export async function GET(req: Request) {
       const cc = companion && !companion.error ? dropWeekendCandles(companion.candles).candles : [];
       const st0 = Date.now();
       const events = cc.length > 40 ? smtSeries(candles, cc) : [];
-      return NextResponse.json({
-        stage: "smt", bars: candles.length, companionBars: cc.length, events: events.length,
-        companionError: companion?.error ?? null,
-        timings: { fetchMs: Date.now() - t0, companionMs: Date.now() - ct0, smtSeriesMs: Date.now() - st0 },
-      });
+      if (stageParam === "smt") {
+        return NextResponse.json({
+          stage: "smt", bars: candles.length, companionBars: cc.length, events: events.length,
+          companionError: companion?.error ?? null,
+          timings: { fetchMs: Date.now() - t0, companionMs: Date.now() - ct0, smtSeriesMs: Date.now() - st0 },
+        });
+      }
     }
     if (stageParam === "core") {
       const t0 = Date.now();
