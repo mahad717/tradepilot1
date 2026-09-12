@@ -410,6 +410,11 @@ export interface SeriesContext {
   swingLadder: Swing[];
   sweeps: LiquiditySweep[];
   pools: LiquidityPool[];
+  /** structure events pre-split by direction, index-ascending — enables O(log n) recency queries */
+  structureBull: StructureEvent[];
+  structureBear: StructureEvent[];
+  /** pools sorted by price — enables O(log n) price-proximity queries */
+  poolsByPrice: LiquidityPool[];
   smtBullishAt: (i: number) => boolean;
   smtBearishAt: (i: number) => boolean;
   rangeAt: (i: number) => TrailingRange;
@@ -445,6 +450,68 @@ function zonesInWindow(
     out.push(zoneIndex[k]);
   }
   return out;
+}
+
+/** first array position whose index value is ≥ minIdx (binary search) */
+function lowerBoundByIndex<T extends { index: number }>(events: T[], minIdx: number): number {
+  let lo = 0;
+  let hi = events.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (events[mid].index < minIdx) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * OLDEST structure event with direction-matching side, index in
+ * [minIdx, maxIdx] — identical result to `events.find(e => e.index >= minIdx
+ * && e.index <= maxIdx && direction match)` on an ascending array, but
+ * O(log n + window) instead of a full-history scan (deep-window CPU fix).
+ */
+function structFind(
+  dirEvents: StructureEvent[],
+  minIdx: number,
+  maxIdx: number,
+  dir: "BULLISH" | "BEARISH"
+): StructureEvent | null {
+  void dir; // arrays are pre-split by direction
+  const k = lowerBoundByIndex(dirEvents, minIdx);
+  return k < dirEvents.length && dirEvents[k].index <= maxIdx ? dirEvents[k] : null;
+}
+
+/**
+ * NEWEST sweep matching side with index in [minIdx, maxIdx] — identical to
+ * `[...sweeps].reverse().find(...)` without the per-bar array copy+reverse.
+ * sweeps must be index-ascending (detection appends chronologically).
+ */
+function sweepFindNewest(
+  sweeps: LiquiditySweep[],
+  minIdx: number,
+  maxIdx: number,
+  sellSide: boolean
+): LiquiditySweep | null {
+  for (let s = sweeps.length - 1; s >= 0; s--) {
+    const ev = sweeps[s];
+    if (ev.index > maxIdx) continue;
+    if (ev.index < minIdx) break; // ascending: everything older is out of window
+    if ((sellSide ? ev.side === "SELL_SIDE" : ev.side === "BUY_SIDE")) return ev;
+  }
+  return null;
+}
+
+/** any pool within ±`distance` of `price` (binary search over price-sorted pools) */
+function poolNearPrice(poolsByPrice: LiquidityPool[], price: number, distance: number): boolean {
+  let lo = 0;
+  let hi = poolsByPrice.length;
+  const min = price - distance;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (poolsByPrice[mid].price < min) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < poolsByPrice.length && poolsByPrice[lo].price <= price + distance;
 }
 
 /** Build every causal series the setup builder needs (pure — no I/O). */
@@ -547,6 +614,20 @@ export function buildSeriesContext(
     ordersExpired: 0, tradesClosed: 0,
   };
 
+  // per-direction structure arrays + price-sorted pools: the setup scan used
+  // to run full-array .find() / [...spread].reverse() PER BAR PER MODEL
+  // (O(events) with no early exit — the dominant rejection path scanned the
+  // entire history on every bar). Binary search over these pre-sorted arrays
+  // makes every recency/proximity query O(log n). Same results, pinned by
+  // the full self-test suite (truncation invariance + replay consistency).
+  const structureBull: StructureEvent[] = [];
+  const structureBear: StructureEvent[] = [];
+  for (const e of walk.events) {
+    if (e.direction === "BULLISH") structureBull.push(e);
+    else structureBear.push(e);
+  }
+  const poolsByPrice = [...pools].sort((a, b) => a.price - b.price);
+
   const diag = newDiagSink();
   // OB creation pipeline — series-wide counts for the Model C/D diagnosis
   diag.obZonesCreated = obZones.length;
@@ -556,6 +637,7 @@ export function buildSeriesContext(
     symbol, interval, candles, intervalSec, atrS, volRegimes, regime,
     structureEvents: walk.events, trendAt: walk.trendAt, biasAt,
     zones, zoneMitigatedAt, zoneCreatedIndex, zoneKind, zoneIndex,
+    structureBull, structureBear, poolsByPrice,
     sweeps, pools, smtBullishAt, smtBearishAt, rangeAt, funnel, swingLadder,
     diag,
   };
@@ -611,12 +693,12 @@ export function buildSetupAt(
   const range = ctx.rangeAt(i);
   const rangeOk = range.high - range.low >= 0.5 * atrI;
   if (rangeOk) diag.rangeBars++;
-  const poolNear = ctx.pools.some((p) => Math.abs(p.price - c.close) <= 10 * atrI);
+  const poolNear = poolNearPrice(ctx.poolsByPrice, c.close, 10 * atrI);
   if (poolNear) diag.poolBars++;
   const wantBullishBias = bias === "BULLISH";
-  const biasSweep = [...ctx.sweeps].reverse().find((s) => s.index < i && i - s.index <= cfg.maxSweepAgeBars && (wantBullishBias ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE"));
+  const biasSweep = sweepFindNewest(ctx.sweeps, i - cfg.maxSweepAgeBars, i - 1, wantBullishBias);
   if (biasSweep) diag.sweepBars++;
-  const biasStructure = ctx.structureEvents.find((e) => e.index <= i && i - e.index <= cfg.maxStructureAgeBars && e.direction === (wantBullishBias ? "BULLISH" : "BEARISH"));
+  const biasStructure = structFind(wantBullishBias ? ctx.structureBull : ctx.structureBear, i - cfg.maxStructureAgeBars, i, wantBullishBias ? "BULLISH" : "BEARISH");
   if (biasStructure) diag.structureBars++;
 
   // ---- side from causal HTF bias ------------------------------------------
@@ -797,14 +879,7 @@ function evaluateModel(
 
   if (model !== "B_FVG_CONTINUATION") {
     // reversal models REQUIRE the sweep (their identity)
-    sweep = [...ctx.sweeps]
-      .reverse()
-      .find(
-        (s) =>
-          s.index < i &&
-          i - s.index <= cfg.maxSweepAgeBars &&
-          (wantBullish ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE")
-      ) ?? null;
+    sweep = sweepFindNewest(ctx.sweeps, i - cfg.maxSweepAgeBars, i - 1, wantBullish);
     if (!sweep) return finish("NO_LIQUIDITY_SWEEP");
     diag.sweepsFound++;
     partial.sweep = sweep;
@@ -817,32 +892,32 @@ function evaluateModel(
     if (cfg.oneTradePerSweep && cooldown.usedSweepKeys.has(`${sweep.index}:${sweep.level}`)) {
       return finish("DUPLICATE_SETUP");
     }
-    // structure must be caused by the sweep
-    structureAnchor = ctx.structureEvents.find(
-      (e) =>
-        e.index > sweep!.index &&
-        e.index <= i &&
-        i - e.index <= cfg.maxStructureAgeBars &&
-        e.direction === (wantBullish ? "BULLISH" : "BEARISH")
-    ) ?? null;
+    // structure must be caused by the sweep — window (sweep.index, i] ∩
+    // recency [i-K, i] (both original constraints), oldest match first
+    structureAnchor = structFind(
+      wantBullish ? ctx.structureBull : ctx.structureBear,
+      Math.max((sweep as LiquiditySweep).index + 1, i - cfg.maxStructureAgeBars),
+      i,
+      wantBullish ? "BULLISH" : "BEARISH"
+    );
     if (!structureAnchor) {
       // is there a matching event just outside the recency window? → WEAK vs NONE
-      const stale = ctx.structureEvents.find(
-        (e) => e.index > sweep!.index && e.index <= i && e.direction === (wantBullish ? "BULLISH" : "BEARISH")
+      const stale = structFind(
+        wantBullish ? ctx.structureBull : ctx.structureBear,
+        (sweep as LiquiditySweep).index + 1,
+        i,
+        wantBullish ? "BULLISH" : "BEARISH"
       );
       return finish(stale ? "WEAK_MSS" : "NO_MSS");
     }
     diag.structuresFound++;
   } else {
     // Model B: continuation — BOS/MSS in the bias direction, no sweep needed
-    structureAnchor = ctx.structureEvents.find(
-      (e) =>
-        e.index <= i &&
-        i - e.index <= cfg.maxStructureAgeBars &&
-        e.direction === (wantBullish ? "BULLISH" : "BEARISH")
-    ) ?? null;
+    const dirEvents = wantBullish ? ctx.structureBull : ctx.structureBear;
+    structureAnchor = structFind(dirEvents, i - cfg.maxStructureAgeBars, i, wantBullish ? "BULLISH" : "BEARISH");
     if (!structureAnchor) {
-      const stale = ctx.structureEvents.find((e) => e.index <= i && e.direction === (wantBullish ? "BULLISH" : "BEARISH"));
+      // any matching event at or before i at all? (oldest = first of the array)
+      const stale = dirEvents.length > 0 && dirEvents[0].index <= i ? dirEvents[0] : null;
       return finish(stale ? "WEAK_MSS" : "NO_MSS");
     }
     diag.structuresFound++;
@@ -1425,7 +1500,7 @@ export function probeSetupState(ctx: SeriesContext, i: number, cfg: EngineConfig
   push("dealingRange", "Dealing range", true, rangeOk,
     rangeOk ? `Trailing range ${range.low.toFixed(2)}–${range.high.toFixed(2)} (EQ ${range.equilibrium.toFixed(2)}).` : "Trailing range too narrow vs volatility — no meaningful dealing range.", c.time, range.equilibrium);
 
-  const poolNear = atrI > 0 && ctx.pools.some((p) => Math.abs(p.price - c.close) <= 10 * atrI);
+  const poolNear = atrI > 0 && poolNearPrice(ctx.poolsByPrice, c.close, 10 * atrI);
   push("liquidityPool", "Liquidity pool identified", true, poolNear,
     poolNear ? "Equal-high/low pool(s) within 10 ATR of price." : "No equal-high/low pool near price — waiting for liquidity to build.", c.time, null);
 
@@ -1433,7 +1508,7 @@ export function probeSetupState(ctx: SeriesContext, i: number, cfg: EngineConfig
     `${session === "off-session" ? "Outside all kill zones" : `Inside ${SESSION_LABELS[session]}`} — kill zone is an optional score confluence.`, c.time, null);
 
   const sweep = side
-    ? [...ctx.sweeps].reverse().find((s) => s.index < i && i - s.index <= cfg.maxSweepAgeBars && (wantBullish ? s.side === "SELL_SIDE" : s.side === "BUY_SIDE")) ?? null
+    ? sweepFindNewest(ctx.sweeps, i - cfg.maxSweepAgeBars, i - 1, wantBullish)
     : null;
   const sweepAssessment = sweep ? classifySweep(candles, sweep, ctx.atrS[sweep.index] || atrI) : null;
   const sweepOk = !!sweep && !!sweepAssessment && (sweepAssessment.cls === "SWEEP_REJECTION" || (cfg.allowUnconfirmedSweep && sweepAssessment.cls === "SWEEP_NO_CONFIRM")) && sweepAssessment.quality >= cfg.sweepQualityMin;
@@ -1448,7 +1523,7 @@ export function probeSetupState(ctx: SeriesContext, i: number, cfg: EngineConfig
     sweep?.time ?? null, sweep?.level ?? null);
 
   const structure = side
-    ? ctx.structureEvents.find((e) => e.index <= i && i - e.index <= cfg.maxStructureAgeBars && e.direction === (wantBullish ? "BULLISH" : "BEARISH")) ?? null
+    ? structFind(wantBullish ? ctx.structureBull : ctx.structureBear, i - cfg.maxStructureAgeBars, i, wantBullish ? "BULLISH" : "BEARISH")
     : null;
   push("mss", "MSS / CHOCH", true, !!structure,
     structure
