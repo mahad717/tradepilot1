@@ -43,6 +43,8 @@ import { DEFAULT_COSTS, describeCosts } from "./costs";
 import { getCompanionCandles } from "@/lib/market";
 import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary, ObPipeline, SmtSplit, SmtSplitStat } from "./types";
 import type { Candle } from "@/lib/market/types";
+import type { CsvParseSummary } from "@/lib/market/csv";
+import { intervalLabelOfKey } from "@/lib/market/csv";
 
 export interface BacktestResult {
   symbol: SymbolKey;
@@ -91,6 +93,8 @@ export interface BacktestResult {
   smtSplit: SmtSplit | null;
   /** requested vs actually-fetched history (deep windows can fall short) */
   fetch: { requested: number; receivedRaw: number; requests: number; shortfallPct: number; deep: boolean };
+  /** set when the run was driven by an uploaded CSV instead of the market API */
+  csvSummary?: CsvParseSummary;
   strictness: Strictness;
   strictnessNote: string;
   lossReasons: LossReasonRow[];
@@ -132,18 +136,31 @@ export interface BacktestOptions {
   strictness?: Strictness;
   /** false skips the SMT companion fetch entirely (SMT confluence then absent) */
   includeCompanion?: boolean;
+  /**
+   * Uploaded-history mode: when present the run uses these candles verbatim —
+   * no TwelveData fetch, no SMT companion (pairing an uploaded series with a
+   * live API companion would fabricate divergences across different feeds).
+   */
+  csvCandles?: Candle[];
+  /** parser report for the uploaded CSV — echoed in the result */
+  csvSummary?: CsvParseSummary;
 }
 
 /**
  * Data-quality audit of the fetched history (spec §18-historical data).
  * The regular Fri-close → Sun-reopen gap (≤ 60h, Fri/Sat/Sun → Sun/Mon) is
- * EXPECTED for spot metals and is not counted as a data issue.
+ * EXPECTED for spot metals and is not counted as a data issue. On daily (or
+ * coarser) candles the whole weekend collapses into one Fri → Mon jump of
+ * ≤ 96h — also expected, never a data issue.
  */
-function isWeekendGap(fromSec: number, toSec: number): boolean {
+function isWeekendGap(fromSec: number, toSec: number, intervalSec = 3600): boolean {
   const a = new Date(fromSec * 1000);
   const b = new Date(toSec * 1000);
   const da = a.getUTCDay();
   const db = b.getUTCDay();
+  if (intervalSec >= 86400) {
+    return (da === 5 || da === 6 || da === 0) && (db === 0 || db === 1) && toSec - fromSec <= 96 * 3600;
+  }
   return (da === 5 || da === 6 || da === 0) && (db === 0 || db === 1) && toSec - fromSec <= 60 * 3600;
 }
 
@@ -165,7 +182,7 @@ function auditDataQuality(candles: Candle[], intervalSec: number, weekendDropped
       else if (dt > intervalSec) {
         gaps++;
         largestGapBars = Math.max(largestGapBars, Math.round(dt / intervalSec));
-        if (isWeekendGap(p.time, c.time)) weekendGaps++;
+        if (isWeekendGap(p.time, c.time, intervalSec)) weekendGaps++;
       }
     }
   }
@@ -196,33 +213,62 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   const cfg: EngineConfig = { ...DEFAULT_CONFIG, ...presetFor(strictness), ...opts.config };
   if (!cfg.costs.XAUUSD) cfg.costs = { ...DEFAULT_COSTS };
 
-  // Deep windows (sample-size starvation is the #1 honest blocker) are
-  // assembled from paginated ≤5000-bar chunks; standard windows use the
-  // single-request path.
-  const fetchRes = bars > 5000
-    ? await getCandlesDeep(symbol, interval, bars)
-    : await getCandles(symbol, interval, bars);
-  const rawCandles = fetchRes.candles;
+  // CSV mode: the run is driven by an uploaded candle file — no upstream
+  // fetch at all. The parser's report rides along for the response.
+  const csvMode = !!opts.csvCandles && opts.csvCandles.length > 0;
+  let rawCandles: Candle[];
+  let sourceLabel: string;
+  let upstreamRequests = 0;
+  if (csvMode) {
+    rawCandles = opts.csvCandles!;
+    sourceLabel = "CSV";
+  } else {
+    // Deep windows (sample-size starvation is the #1 honest blocker) are
+    // assembled from paginated ≤5000-bar chunks; standard windows use the
+    // single-request path.
+    const fetchRes = bars > 5000
+      ? await getCandlesDeep(symbol, interval, bars)
+      : await getCandles(symbol, interval, bars);
+    rawCandles = fetchRes.candles;
+    sourceLabel = fetchRes.source;
+    upstreamRequests = (fetchRes as { requests?: number }).requests ?? 0;
+  }
   // fetch accounting: deep windows can silently fall short (upstream runs
   // dry / request budget) — surface requested vs received so two runs of
   // the same selector are comparable and shortfalls are never hidden.
-  const requests = (fetchRes as { requests?: number }).requests ?? 0;
+  // CSV runs deliver exactly the file's candles: no shortfall is possible.
   const fetch = {
-    requested: bars,
+    requested: csvMode ? rawCandles.length : bars,
     receivedRaw: rawCandles.length,
-    requests,
-    shortfallPct: bars > 0 ? Math.max(0, Math.round(((bars - rawCandles.length) / bars) * 1000) / 10) : 0,
-    deep: bars > 5000,
+    requests: upstreamRequests,
+    shortfallPct: csvMode || bars === 0 ? 0 : Math.max(0, Math.round(((bars - rawCandles.length) / bars) * 1000) / 10),
+    deep: !csvMode && bars > 5000,
   };
   // Spot metals feeds quote ~24/7 — drop dead weekend hours so ICT session
   // logic never fires in a closed market. Counted in the data-quality audit.
   const { candles, dropped: weekendDropped } = dropWeekendCandles(rawCandles);
-  if (candles.length < 150) throw new Error("Not enough historical candles for a backtest");
+  if (candles.length < 150) {
+    if (csvMode && opts.csvSummary) {
+      const s = opts.csvSummary;
+      const tf = s.detectedInterval ? `${intervalLabelOfKey(s.detectedInterval)} ` : "";
+      throw new Error(
+        `CSV data has only ${candles.length} usable ${tf}candles (from ${s.rowsSeen} rows). The engine needs ≥150. Upload a longer history — for meaningful ICT results, several months of 5m/15m/1H candles.`
+      );
+    }
+    throw new Error("Not enough historical candles for a backtest");
+  }
   const dataQuality = auditDataQuality(candles, intervalSecondsOf(interval), weekendDropped);
   dataQuality.requestedBars = fetch.requested;
   dataQuality.rawFetched = fetch.receivedRaw;
   dataQuality.fetchRequests = fetch.requests;
   dataQuality.fetchShortfallPct = fetch.shortfallPct;
+  if (csvMode && opts.csvSummary) {
+    const s = opts.csvSummary;
+    dataQuality.note = `Data source: uploaded CSV (${s.format}) — ${s.parsed} candles${s.detectedInterval ? ` @ ${intervalLabelOfKey(s.detectedInterval)}` : ""}, ${new Date((s.from ?? 0) * 1000).toISOString().slice(0, 10)} → ${new Date((s.to ?? 0) * 1000).toISOString().slice(0, 10)}; ${s.skipped} row${s.skipped === 1 ? "" : "s"} skipped, ${s.duplicatesRemoved} duplicate${s.duplicatesRemoved === 1 ? "" : "s"} removed. ${dataQuality.note}`;
+    if (s.detectedSeconds !== null && s.detectedSeconds >= 86400) {
+      dataQuality.note += ` WARNING: daily (or coarser) candles — kill zones, session liquidity and intraday FVG/OB precision cannot be observed on daily bars; treat results as a coarse approximation.`;
+    }
+  }
   if (fetch.deep && fetch.shortfallPct > 10) {
     dataQuality.note += ` WARNING: requested ${fetch.requested} bars but the upstream delivered only ${fetch.receivedRaw} raw (${fetch.shortfallPct}% shortfall over ${fetch.requests} chunk requests) — this window is SMALLER than the selector promises; runs are only comparable at equal received bars.`;
   }
@@ -230,7 +276,9 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   // SMT companion (optional): the correlated second series SMT compares
   // against. Live companion → real divergence confluence; unavailable → SMT
   // score bonus is silently absent, which the run now states explicitly.
-  const companion = opts.includeCompanion === false || fetchRes.source !== "LIVE"
+  // CSV runs deliberately go WITHOUT a companion: mixing an uploaded series
+  // with a live API feed would fabricate divergences across different sources.
+  const companion = opts.includeCompanion === false || sourceLabel !== "LIVE"
     ? null
     : await getCompanionCandles(symbol, interval, bars);
   const companionFailed = !!companion?.error;
@@ -242,14 +290,16 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     : null;
   const smt = {
     companion: companion && !companion.error ? companion.label : null,
-    source: companion && !companion.error ? companion.source : (fetchRes.source !== "LIVE" ? "unavailable (simulated base series)" : "unavailable"),
+    source: companion && !companion.error ? companion.source : (csvMode ? "disabled (uploaded CSV)" : sourceLabel !== "LIVE" ? "unavailable (simulated base series)" : "unavailable"),
     events: smtEvents.length,
     coveragePct: smtCoveragePct,
     note: companionFailed
       ? `SMT companion fetch failed (${companion!.error}) — SMT confluence contributes nothing on this run. This is often a transient credit/rate limit; retry shortly.`
-      : companion?.note ?? (fetchRes.source !== "LIVE"
-        ? "The traded series is simulated — pairing it with a live companion would fabricate divergences, so SMT is disabled on this run."
-        : "No SMT companion was fetchable — SMT confluence contributes nothing on this run."),
+      : csvMode
+        ? "Data source is an uploaded CSV — SMT confluence is disabled. Pairing an uploaded series with a live API companion would fabricate divergences across different feeds."
+        : companion?.note ?? (sourceLabel !== "LIVE"
+          ? "The traded series is simulated — pairing it with a live companion would fabricate divergences, so SMT is disabled on this run."
+          : "No SMT companion was fetchable — SMT confluence contributes nothing on this run."),
   };
   if (smtCoveragePct !== null && smtCoveragePct < 60) {
     smt.note += ` WARNING: companion data covers only ${smtCoveragePct}% of the traded window (upstream returned a partial series) — divergence confluence was judged on the covered part only; runs at different coverage are not comparable.`;
@@ -258,7 +308,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   // lower-timeframe data for the "ltf" candle-ambiguity model (spec #29)
   let ltfCandles: Candle[] | undefined;
   let ltfSeconds: number | undefined;
-  if (cfg.ambiguity === "ltf" && interval === "15min") {
+  if (cfg.ambiguity === "ltf" && interval === "15min" && !csvMode) {
     try {
       const ltf = await getCandles(symbol, "5min", Math.min(bars * 3, 5000));
       if (ltf.candles.length > 0) {
@@ -272,9 +322,10 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
 
   // legacy field name kept for UI/API compat — now reflects the SMT companion
   const silverSource = companion && !companion.error ? companion.source : "unavailable";
-  const result = runBacktestCore(symbol, interval, candles, smtEvents, cfg, fetchRes.source, silverSource, ltfCandles, ltfSeconds, strictness, dataQuality);
+  const result = runBacktestCore(symbol, interval, candles, smtEvents, cfg, sourceLabel, silverSource, ltfCandles, ltfSeconds, strictness, dataQuality);
   result.fetch = fetch; // caller-side accounting overrides the core default
   result.smt = smt;
+  if (csvMode) result.csvSummary = opts.csvSummary;
   return result;
 }
 
@@ -706,6 +757,8 @@ export async function compareStrictness(
     bars?: number;
     config?: Partial<EngineConfig>;
     includeSilverForSmt?: boolean;
+    csvCandles?: Candle[];
+    csvSummary?: CsvParseSummary;
   }
 ): Promise<StrictnessComparisonRow[]> {
   const levels: Strictness[] = ["conservative", "balanced", "aggressive"];
@@ -777,6 +830,8 @@ export async function compareDimension(
     bars?: number;
     config?: Partial<EngineConfig>;
     includeSilverForSmt?: boolean;
+    csvCandles?: Candle[];
+    csvSummary?: CsvParseSummary;
   },
   dimension: CompareDimension
 ): Promise<DimensionComparison> {

@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
 import { fmtDate } from "./format";
+import { parseCsvCandles, intervalLabelOfKey, type CsvParseSummary } from "@/lib/market/csv";
 import type { BacktestResult, StrictnessComparisonRow, DimensionComparison, CompareDimension } from "@/lib/ict/backtest";
 import type { ConfluenceItem, RejectedSetupSample, TradeRecord } from "@/lib/ict/types";
 
@@ -291,6 +292,27 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [compactMode, setCompactMode] = useState(false);
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const lastParamsRef = useRef<string | null>(null);
+  // data-source selector: live API (TwelveData) or an uploaded candle CSV
+  const [dataSource, setDataSource] = useState<"api" | "csv">("api");
+  const [csvText, setCsvText] = useState<string | null>(null);
+  const [csvName, setCsvName] = useState("");
+  const [csvPreview, setCsvPreview] = useState<CsvParseSummary | null>(null);
+  const lastCsvRef = useRef<string | null>(null);
+
+  async function onCsvFile(f: File | null) {
+    setCsvPreview(null);
+    setCsvText(null);
+    if (!f) return;
+    setCsvName(f.name);
+    try {
+      const text = await f.text();
+      const { summary } = parseCsvCandles(text);
+      setCsvText(text);
+      setCsvPreview(summary);
+    } catch {
+      setError("The file could not be read as text.");
+    }
+  }
 
   async function run() {
     setLoading(true);
@@ -321,6 +343,42 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
       if (compare) {
         params.set("compare", "1");
         params.set("compareDim", compareDim);
+      }
+      // uploaded-CSV path: the FILE defines interval + window; the server
+      // re-parses authoritatively and auto-compacts deep responses
+      if (dataSource === "csv") {
+        if (!csvText) throw new Error("Choose a CSV file first.");
+        params.delete("interval");
+        params.delete("bars");
+        params.delete("compact");
+        lastParamsRef.current = params.toString();
+        lastCsvRef.current = csvText;
+        setCompactMode(false);
+        setError(null);
+        let json: Record<string, unknown> | null = null;
+        let lastErr = "CSV backtest failed";
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
+          const res = await fetch(`/api/backtest/csv?${params.toString()}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ csv: csvText }),
+          });
+          try {
+            json = (await res.json()) as Record<string, unknown>;
+          } catch {
+            lastErr = `Transient worker error (HTTP ${res.status}) — retrying…`;
+            json = null;
+            continue;
+          }
+          if (res.ok && json) break;
+          lastErr = typeof json?.error === "string" ? json.error : `HTTP ${res.status}`;
+          json = null;
+        }
+        if (!json) throw new Error(lastErr);
+        setCompactMode(json.compact === true);
+        setResult(json as unknown as typeof result);
+        return;
       }
       const compact = bars > 5000;
       if (compact) params.set("compact", "1");
@@ -359,7 +417,16 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
     try {
       const u = new URLSearchParams(lastParamsRef.current);
       u.set("tradeDetail", tradeId);
-      const res = await fetch(`/api/backtest?${u.toString()}`);
+      // CSV runs must replay the uploaded file — the GET endpoint only serves
+      // live-API windows, so POST the stored CSV to the csv route
+      const isCsvRun = dataSource === "csv" && lastCsvRef.current;
+      const res = isCsvRun
+        ? await fetch(`/api/backtest/csv?${u.toString()}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ csv: lastCsvRef.current, tradeDetail: tradeId }),
+          })
+        : await fetch(`/api/backtest?${u.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.trade) throw new Error(json.error ?? "Trade detail unavailable");
       const full = json.trade as TradeRecord;
@@ -416,8 +483,27 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
       {/* ---------------- config ---------------- */}
       <div className="flex flex-wrap items-end gap-3">
         <div>
+          <label htmlFor="bt-src" className="mb-1 block text-xs text-muted-foreground" title="Live API fetches TwelveData history; CSV runs the engine entirely on an uploaded candle file — no API credits, no fetch shortfall.">Data source</label>
+          <select id="bt-src" value={dataSource} onChange={(e) => setDataSource(e.target.value as "api" | "csv")} className={selectCls}>
+            <option value="api">TwelveData API</option>
+            <option value="csv">Uploaded CSV</option>
+          </select>
+        </div>
+        {dataSource === "csv" && (
+          <div>
+            <label htmlFor="bt-csv" className="mb-1 block text-xs text-muted-foreground">Candle file (.csv)</label>
+            <input
+              id="bt-csv"
+              type="file"
+              accept=".csv,.txt,text/csv"
+              onChange={(e) => onCsvFile(e.target.files?.[0] ?? null)}
+              className="h-9 text-xs file:mr-2 file:h-9 file:rounded-l-lg file:border-0 file:bg-muted file:px-3 file:text-xs file:text-foreground"
+            />
+          </div>
+        )}
+        <div>
           <label htmlFor="bt-interval" className="mb-1 block text-xs text-muted-foreground">Timeframe</label>
-          <select id="bt-interval" value={btInterval} onChange={(e) => setBtInterval(e.target.value)} className={selectCls}>
+          <select id="bt-interval" value={btInterval} onChange={(e) => setBtInterval(e.target.value)} disabled={dataSource === "csv"} className={`${selectCls} disabled:opacity-50`}>
             <option value="5min">5m</option>
             <option value="15min">15m</option>
             <option value="1h">1H</option>
@@ -426,12 +512,13 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         </div>
         <div>
           <label htmlFor="bt-bars" className="mb-1 block text-xs text-muted-foreground">History (bars)</label>
-          <select id="bt-bars" value={bars} onChange={(e) => setBars(Number(e.target.value))} className={selectCls}>
+          <select id="bt-bars" value={bars} onChange={(e) => setBars(Number(e.target.value))} disabled={dataSource === "csv"} className={`${selectCls} disabled:opacity-50`}>
             {[400, 1000, 1500, 3000, 5000, 10000, 15000, 25000].map((b) => (
               <option key={b} value={b}>{b}{b > 5000 ? " (deep)" : ""}</option>
             ))}
           </select>
-          {bars > 5000 && <p className="mt-1 text-[10px] text-muted-foreground">Deep windows are assembled from paginated API chunks (extra credits, slower first run, then cached 15 min).</p>}
+          {dataSource === "api" && bars > 5000 && <p className="mt-1 text-[10px] text-muted-foreground">Deep windows are assembled from paginated API chunks (extra credits, slower first run, then cached 15 min).</p>}
+          {dataSource === "csv" && <p className="mt-1 text-[10px] text-muted-foreground">Interval + window are detected from the file — full history runs.</p>}
         </div>
         <div>
           <label htmlFor="bt-strict" className="mb-1 block text-xs text-muted-foreground">Strictness</label>
@@ -562,14 +649,44 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             </select>
           </div>
         )}
-        <Button onClick={run} disabled={loading} className="h-9 bg-primary text-primary-foreground hover:bg-gold-soft">
-          {loading ? "Running…" : `Run backtest · ${symbol}`}
+        <Button
+          onClick={run}
+          disabled={loading || (dataSource === "csv" && (!csvPreview || csvPreview.parsed < 150))}
+          className="h-9 bg-primary text-primary-foreground hover:bg-gold-soft"
+        >
+          {loading ? "Running…" : `Run backtest · ${symbol}${dataSource === "csv" ? " (CSV)" : ""}`}
         </Button>
         {result && user && (
           <Button variant="outline" className="h-9 border-border" onClick={saveRun}>Save run</Button>
         )}
         {savedMsg && <span className="text-xs text-muted-foreground">{savedMsg}</span>}
       </div>
+      {dataSource === "csv" && csvPreview && (
+        <div className="rounded-lg border border-border bg-card px-4 py-3 text-sm" role="status">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold">{csvName || "CSV"}</span>
+            <span className="rounded bg-background/40 px-2 py-0.5 text-xs">{csvPreview.format}</span>
+            <span className="text-xs text-muted-foreground">
+              {csvPreview.parsed} candles{csvPreview.detectedInterval ? ` · ${intervalLabelOfKey(csvPreview.detectedInterval)} detected` : ""}
+              {" · "}{csvPreview.from ? new Date(csvPreview.from * 1000).toISOString().slice(0, 10) : "—"} → {csvPreview.to ? new Date(csvPreview.to * 1000).toISOString().slice(0, 10) : "—"}
+              {csvPreview.skipped > 0 ? ` · ${csvPreview.skipped} rows skipped` : ""}
+              {csvPreview.duplicatesRemoved > 0 ? ` · ${csvPreview.duplicatesRemoved} dupes removed` : ""}
+              {csvPreview.reSorted ? " · re-sorted to chronological" : ""}
+            </span>
+          </div>
+          {csvPreview.parsed < 150 && (
+            <p className="mt-1 text-xs text-red-300">
+              Below the engine's 150-candle minimum — upload a longer history before running.
+              {csvPreview.detectedSeconds !== null && csvPreview.detectedSeconds >= 86400
+                ? " This file is DAILY data: ICT intraday models (kill zones, session liquidity, FVG precision) cannot be observed on daily bars — download 5m/15m/1H history instead."
+                : " For meaningful ICT results, several months of 5m/15m/1H candles are the sweet spot."}
+            </p>
+          )}
+          {csvPreview.warnings.map((w, i) => (
+            <p key={i} className="mt-1 text-xs text-amber-300">{w}</p>
+          ))}
+        </div>
+      )}
       {error && (
         <p role="alert" className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-3 text-sm text-red-300">{error}</p>
       )}
