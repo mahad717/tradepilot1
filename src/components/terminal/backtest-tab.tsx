@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
 import { fmtDate } from "./format";
@@ -195,7 +195,18 @@ const TRACE_ORDER: { key: string; label: string }[] = [
 ];
 
 /** Per-condition traceability viewer for executed trades (spec §3). */
-function ConfluenceViewer({ trade }: { trade: TradeRecord }) {
+function ConfluenceViewer({ trade, onLoad, loading }: { trade: TradeRecord; onLoad?: () => void; loading?: boolean }) {
+  if (!trade.confluence) {
+    return (
+      <details className="mt-1">
+        <summary className="cursor-pointer text-[11px] text-gold hover:underline">confluence trace (compact deep-window mode)</summary>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Trace text is omitted in compact deep-window responses to stay under the Worker resource ceiling.
+          {onLoad ? <button type="button" onClick={onLoad} disabled={loading} className="ml-1 text-gold hover:underline">{loading ? "loading…" : "load this trade's detail"}</button> : null}
+        </p>
+      </details>
+    );
+  }
   return (
     <details className="mt-1">
       <summary className="cursor-pointer text-[11px] text-gold hover:underline">confluence trace (why each condition was true)</summary>
@@ -215,7 +226,18 @@ function ConfluenceViewer({ trade }: { trade: TradeRecord }) {
   );
 }
 
-function AuditViewer({ trade }: { trade: TradeRecord }) {
+function AuditViewer({ trade, onLoad, loading }: { trade: TradeRecord; onLoad?: () => void; loading?: boolean }) {
+  if (!trade.audit || trade.audit.length === 0) {
+    return (
+      <details className="mt-1">
+        <summary className="cursor-pointer text-[11px] text-gold hover:underline">trade audit log (compact deep-window mode)</summary>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          The audit trail is omitted in compact deep-window responses to stay under the Worker resource ceiling.
+          {onLoad ? <button type="button" onClick={onLoad} disabled={loading} className="ml-1 text-gold hover:underline">{loading ? "loading…" : "load this trade's audit"}</button> : null}
+        </p>
+      </details>
+    );
+  }
   return (
     <details className="mt-1">
       <summary className="cursor-pointer text-[11px] text-gold hover:underline">trade audit log</summary>
@@ -264,6 +286,11 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  // compact deep-window mode: bars > 5000 ship without audit/confluence text
+  // (Worker resource ceiling) — a trade's detail loads on demand
+  const [compactMode, setCompactMode] = useState(false);
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
+  const lastParamsRef = useRef<string | null>(null);
 
   async function run() {
     setLoading(true);
@@ -295,6 +322,10 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
         params.set("compare", "1");
         params.set("compareDim", compareDim);
       }
+      const compact = bars > 5000;
+      if (compact) params.set("compact", "1");
+      lastParamsRef.current = params.toString();
+      setCompactMode(compact);
       const res = await fetch(`/api/backtest?${params.toString()}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Backtest failed");
@@ -303,6 +334,26 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
       setError(e instanceof Error ? e.message : "Backtest failed");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadTradeDetail(tradeId: string) {
+    if (!lastParamsRef.current) return;
+    setDetailLoadingId(tradeId);
+    try {
+      const u = new URLSearchParams(lastParamsRef.current);
+      u.set("tradeDetail", tradeId);
+      const res = await fetch(`/api/backtest?${u.toString()}`);
+      const json = await res.json();
+      if (!res.ok || !json.trade) throw new Error(json.error ?? "Trade detail unavailable");
+      const full = json.trade as TradeRecord;
+      setResult((prev) => prev
+        ? { ...prev, trades: prev.trades.map((t) => t.id === tradeId ? { ...t, audit: full.audit ?? [], confluence: full.confluence ?? t.confluence, rationale: full.rationale ?? [] } : t) }
+        : prev);
+    } catch {
+      setSavedMsg("Trade detail could not be loaded — try again shortly.");
+    } finally {
+      setDetailLoadingId(null);
     }
   }
 
@@ -850,7 +901,11 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             title="Rejected setup inspector"
             subtitle="Sampled rejected opportunities with the chart state the engine saw at the decision bar — click a date to inspect. Visual verification of the strategy."
           >
-            <RejectedInspector samples={result.rejectedSamples} />
+            {compactMode ? (
+              <p className="text-[11px] text-muted-foreground">Inspector samples are omitted in compact deep-window mode (Worker resource ceiling). Run a ≤5000-bar window for the full inspector.</p>
+            ) : (
+              <RejectedInspector samples={result.rejectedSamples} />
+            )}
           </Section>
 
           {/* ---------------- walk-forward ---------------- */}
@@ -1121,10 +1176,10 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
                 {result.trades.map((t) => (
                   <div key={`d-${t.id}`} className="px-4 py-2">
                     <p className="text-[11px] text-muted-foreground">
-                      <span className={t.side === "LONG" ? "font-semibold text-emerald-400" : "font-semibold text-red-400"}>{t.side}</span> @ {fmtDate(t.entryTime)} — {t.rationale[0]}
+                      <span className={t.side === "LONG" ? "font-semibold text-emerald-400" : "font-semibold text-red-400"}>{t.side}</span> @ {fmtDate(t.entryTime)}{t.rationale[0] ? ` — ${t.rationale[0]}` : ""}
                     </p>
-                    <ConfluenceViewer trade={t} />
-                    <AuditViewer trade={t} />
+                    <ConfluenceViewer trade={t} onLoad={compactMode ? () => loadTradeDetail(t.id) : undefined} loading={detailLoadingId === t.id} />
+                    <AuditViewer trade={t} onLoad={compactMode ? () => loadTradeDetail(t.id) : undefined} loading={detailLoadingId === t.id} />
                   </div>
                 ))}
               </div>

@@ -73,6 +73,12 @@ export async function GET(req: Request) {
   // stated in the response note)
   const trimParam = searchParams.get("trim") === "1";
   const smtOffParam = searchParams.get("smt") === "0";
+  // compact deep-window responses: the full 800KB+ payload (audit trails,
+  // confluence prose, inspector samples) exceeds the Worker resource ceiling
+  // on deep runs — the UI requests compact for bars>5000 and fetches a single
+  // trade's full detail on demand via tradeDetail=<id>
+  const compactParam = searchParams.get("compact") === "1";
+  const tradeDetailParam = searchParams.get("tradeDetail");
 
   if (!isSymbolKey(symbol)) {
     return NextResponse.json({ error: "Unknown symbol" }, { status: 400 });
@@ -222,6 +228,10 @@ export async function GET(req: Request) {
     const result = await runBacktest({ symbol, interval, bars, strictness, config: buildConfig(), includeCompanion: !smtOffParam });
 
     let payload: object = result;
+    if (tradeDetailParam) {
+      const trade = result.trades.find((t) => t.id === tradeDetailParam) ?? null;
+      return NextResponse.json({ trade }, { headers: { "Cache-Control": "private, max-age=300" } });
+    }
     if (trimParam) {
       const { trades, rejectedSamples, ...rest } = result;
       payload = {
@@ -230,6 +240,14 @@ export async function GET(req: Request) {
         rejectedSamples: [],
         trimmed: true,
       };
+    } else if (compactParam) {
+      const trades = result.trades.map((t) => ({
+        ...t,
+        audit: [],
+        confluence: undefined,
+        rationale: [],
+      }));
+      payload = { ...result, trades, rejectedSamples: [], compact: true };
     }
 
     // minRR sensitivity across periods (stability view — NOT for cherry-picking)
@@ -272,9 +290,10 @@ export async function GET(req: Request) {
       }
     }
 
-    return NextResponse.json(trimParam ? payload : { ...payload, sensitivity, comparison, dimensionComparison }, {
-      headers: { "Cache-Control": "private, max-age=300" },
-    });
+    return NextResponse.json(
+      trimParam ? payload : { ...payload, sensitivity, comparison, dimensionComparison },
+      { headers: { "Cache-Control": "private, max-age=300" } }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Backtest failed";
     const status = /rate limit/i.test(message) ? 429 : 502;
