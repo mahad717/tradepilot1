@@ -197,7 +197,9 @@ export async function GET(req: Request) {
           ? await getCandlesDeep(symbol, interval, bars)
           : await getCandles(symbol, interval, bars);
         const candles2 = dropWeekendCandles(fetchRes2.candles).candles;
-        const timings = debugCorePhases(symbol, interval, candles2, [], buildConfig(), strictness);
+        const phase = searchParams.get("phase");
+        const stopAfter = phase === "ctx" || phase === "scan" ? phase : undefined;
+        const timings = debugCorePhases(symbol, interval, candles2, [], buildConfig(), strictness, stopAfter);
         return NextResponse.json({ stage: "core-dbg", bars: candles2.length, timings });
       }
       const result = await runBacktest({ symbol, interval, bars, strictness, config: buildConfig() });

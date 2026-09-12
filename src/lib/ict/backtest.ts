@@ -354,17 +354,20 @@ export function debugCorePhases(
   candles: Candle[],
   smtEvents: SmtEvent[],
   config: Partial<EngineConfig>,
-  strictness: Strictness = "balanced"
+  strictness: Strictness = "balanced",
+  stopAfter?: "ctx" | "scan"
 ): Record<string, number> {
   const cfg: EngineConfig = { ...DEFAULT_CONFIG, ...presetFor(strictness), ...config };
   if (!cfg.costs.XAUUSD) cfg.costs = { ...DEFAULT_COSTS };
-  const timings: Record<string, number> = { bars: candles.length };
+  const timings: Record<string, number> = { bars: candles.length, stopAfter: 0 };
+  timings.stopAfter = stopAfter === "ctx" ? 1 : stopAfter === "scan" ? 2 : 3;
   let t0 = Date.now();
   const ctx = buildSeriesContext(symbol, interval, candles, smtEvents, cfg.obInvalidation, cfg.obDisplacementFactor);
   timings.buildSeriesContextMs = Date.now() - t0;
   timings.zones = ctx.zones.length;
   timings.sweeps = ctx.sweeps.length;
   timings.pools = ctx.pools.length;
+  if (stopAfter === "ctx") return timings;
 
   const execute: ExecuteConfig = {
     beMode: cfg.beMode,
@@ -385,6 +388,7 @@ export function debugCorePhases(
   timings.scanMs = Date.now() - t0;
   timings.ordersPlaced = ctx.funnel.ordersPlaced;
   timings.trades = scan.trades.length;
+  if (stopAfter === "scan") return timings;
 
   t0 = Date.now();
   const metrics = computeMetrics(scan.trades);
