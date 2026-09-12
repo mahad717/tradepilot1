@@ -44,7 +44,7 @@ import { getCompanionCandles } from "@/lib/market";
 import type { TradeRecord, DataQuality, RejectedSetupSample, RrDiagnostics, SessionDiagnostics, OrderFlowSummary, ObPipeline, SmtSplit, SmtSplitStat } from "./types";
 import type { Candle } from "@/lib/market/types";
 import type { CsvParseSummary } from "@/lib/market/csv";
-import { intervalLabelOfKey } from "@/lib/market/csv";
+import { intervalLabelOfKey, granularityLabel } from "@/lib/market/csv";
 
 export interface BacktestResult {
   symbol: SymbolKey;
@@ -250,6 +250,11 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   if (candles.length < 150) {
     if (csvMode && opts.csvSummary) {
       const s = opts.csvSummary;
+      if (s.granularity === "weekly" || s.granularity === "monthly") {
+        throw new Error(
+          `CSV data is ${granularityLabel(s.granularity).toUpperCase()} (${s.parsed} usable candles from ${s.rowsSeen} rows). The engine needs ≥150 INTRADAY candles (5m/15m/1H) — kill zones, session liquidity and FVG/OB precision cannot be observed on ${granularityLabel(s.granularity)} bars. Weekly/monthly files serve as macro context only; upload intraday history to run the engine.`
+        );
+      }
       const tf = s.detectedInterval ? `${intervalLabelOfKey(s.detectedInterval)} ` : "";
       throw new Error(
         `CSV data has only ${candles.length} usable ${tf}candles (from ${s.rowsSeen} rows). The engine needs ≥150. Upload a longer history — for meaningful ICT results, several months of 5m/15m/1H candles.`

@@ -11,6 +11,19 @@
 // so the client can never lie about what the file contains.
 import type { Candle, IntervalKey } from "./types";
 
+/**
+ * Coarseness of the candle spacing, classified from the RAW median gap
+ * (before snapping to the engine's supported interval steps). Weekly and
+ * monthly files cannot drive the engine at all — they are macro context —
+ * so the distinction matters for messaging even though IntervalKey tops
+ * out at 1day.
+ */
+export type CoarseGranularity = "intraday" | "daily" | "weekly" | "monthly";
+
+export function granularityLabel(g: CoarseGranularity): string {
+  return { intraday: "intraday", daily: "daily", weekly: "weekly", monthly: "monthly" }[g];
+}
+
 export interface CsvParseSummary {
   /** data rows seen in the file (header excluded) */
   rowsSeen: number;
@@ -24,6 +37,10 @@ export interface CsvParseSummary {
   reSorted: boolean;
   detectedInterval: IntervalKey | null;
   detectedSeconds: number | null;
+  /** raw-median-gap classification — names weekly/monthly files the snapped key cannot */
+  granularity: CoarseGranularity;
+  /** raw median spacing in seconds (unsnapped), null when undetectable */
+  medianGapSeconds: number | null;
   from: number | null;
   to: number | null;
   headers: string[];
@@ -50,7 +67,7 @@ export function intervalSecondsOfKey(interval: IntervalKey): number {
 }
 
 /** Detect the candle interval from the median spacing between sorted candles. */
-function detectIntervalSeconds(candles: Candle[]): number | null {
+function medianGapSeconds(candles: Candle[]): number | null {
   const gaps: number[] = [];
   for (let i = 1; i < candles.length; i++) {
     const dt = candles[i].time - candles[i - 1].time;
@@ -58,7 +75,12 @@ function detectIntervalSeconds(candles: Candle[]): number | null {
   }
   if (gaps.length === 0) return null;
   gaps.sort((a, b) => a - b);
-  const median = gaps[Math.floor(gaps.length / 2)];
+  return gaps[Math.floor(gaps.length / 2)];
+}
+
+function detectIntervalSeconds(candles: Candle[]): number | null {
+  const median = medianGapSeconds(candles);
+  if (median === null) return null;
   // snap to the nearest supported step (log-distance: 45min → 1h, 2h → 1h/4h edge)
   let best = INTERVAL_STEPS[0];
   let bestDist = Infinity;
@@ -70,6 +92,20 @@ function detectIntervalSeconds(candles: Candle[]): number | null {
     }
   }
   return best.seconds;
+}
+
+/**
+ * Classify candle coarseness from the RAW median spacing. Boundaries tuned
+ * to real downloads: daily bars sit ~1 day apart (weekend Fri→Mon = 3d, but
+ * the median is 1d), weekly exports ~7 days (holiday weeks 14d), monthly
+ * exports ~28–31 days. Beyond 20 days only monthly-style exports exist.
+ */
+export function classifyGranularity(medianSec: number | null): CoarseGranularity {
+  if (medianSec === null) return "intraday";
+  if (medianSec < 86400) return "intraday";
+  if (medianSec < 5 * 86400) return "daily";
+  if (medianSec <= 20 * 86400) return "weekly";
+  return "monthly";
 }
 
 const MONTHS: Record<string, number> = {
@@ -194,7 +230,9 @@ export function parseCsvCandles(raw: string): CsvParseResult {
 
   const summary: CsvParseSummary = {
     rowsSeen: 0, parsed: 0, skipped: 0, duplicatesRemoved: 0, reSorted: false,
-    detectedInterval: null, detectedSeconds: null, from: null, to: null,
+    detectedInterval: null, detectedSeconds: null,
+    granularity: "intraday", medianGapSeconds: null,
+    from: null, to: null,
     headers: [], format: "unknown", warnings,
   };
   if (lines.length === 0) {
@@ -300,6 +338,9 @@ export function parseCsvCandles(raw: string): CsvParseResult {
   // ----- interval + range + guidance -----
   if (deduped.length >= 3) {
     const seconds = detectIntervalSeconds(deduped);
+    const rawMedian = medianGapSeconds(deduped);
+    summary.medianGapSeconds = rawMedian;
+    summary.granularity = classifyGranularity(rawMedian);
     if (seconds !== null) {
       summary.detectedSeconds = seconds;
       const snap = INTERVAL_STEPS.find((s) => s.seconds === seconds);
@@ -315,9 +356,14 @@ export function parseCsvCandles(raw: string): CsvParseResult {
     summary.to = deduped[deduped.length - 1].time;
   }
 
-  if (summary.detectedSeconds !== null && summary.detectedSeconds >= 86400) {
+  if (summary.granularity === "weekly" || summary.granularity === "monthly") {
+    const g = granularityLabel(summary.granularity).toUpperCase();
     warnings.push(
-      "This file contains DAILY (or coarser) candles. The engine runs on them, but ICT intraday models — kill zones, session liquidity, 5-minute FVG precision — cannot be observed on daily bars. Results are a coarse approximation at best."
+      `This file contains ${g} candles (${deduped.length} bars). The backtest engine CANNOT run on them — ICT kill zones, session liquidity and FVG/OB precision need INTRADAY candles (5m/15m/1H). This file serves as higher-timeframe macro context; upload intraday history to run the engine.`
+    );
+  } else if (summary.detectedSeconds !== null && summary.detectedSeconds >= 86400) {
+    warnings.push(
+      "This file contains DAILY candles. The engine runs on them, but ICT intraday models — kill zones, session liquidity, 5-minute FVG precision — cannot be observed on daily bars. Results are a coarse approximation at best."
     );
   }
   if (deduped.length > 0 && deduped.length < 150) {
@@ -346,4 +392,109 @@ function medianGapCrossesWeeks(candles: Candle[]): boolean {
 /** Human label for a detected interval — used by the UI preview banner. */
 export function intervalLabelOfKey(interval: IntervalKey): string {
   return { "5min": "5m", "15min": "15m", "1h": "1H", "4h": "4H", "1day": "1D" }[interval];
+}
+
+// ---------------------------------------------------------------------------
+// Macro context for coarse (daily/weekly/monthly) uploads
+//
+// The engine cannot run on weekly/monthly files, but they still answer real
+// ICT questions at the higher-timeframe level: where is price relative to the
+// previous period's liquidity (PMH/PML analog), is the dealing leg in
+// premium or discount, and what does raw swing structure say. Computed here
+// so the client preview and any future server use share one honest definition.
+// ---------------------------------------------------------------------------
+
+export interface CoarseContext {
+  granularity: CoarseGranularity;
+  /** most recent close in the file */
+  lastClose: number;
+  lastTime: number;
+  /** previous COMPLETED period's range (second-to-last row) — always present when the context exists */
+  prevHigh: number;
+  prevLow: number;
+  /** last close vs the previous period's range */
+  vsPrev: "above-both" | "inside" | "below-both";
+  /** dealing range of the last `leg` completed periods */
+  legHigh: number;
+  legLow: number;
+  /** position of the last close inside the leg range, 0..100 (null when flat leg) */
+  legPct: number | null;
+  legLabel: "premium" | "discount" | "equilibrium" | null;
+  /** fractal swing structure (pivot span 2) — verdict from the last two highs AND lows */
+  structure: "bullish" | "bearish" | "mixed" | null;
+  swingsFound: number;
+  /** consecutive closes in one direction at the end of the file */
+  streak: { dir: "up" | "down" | null; count: number };
+}
+
+const LEG_PERIODS = 6;
+
+/**
+ * ICT-flavored macro read of a coarse candle series. Pure + isomorphic.
+ * Returns null below 8 candles (not enough history for any of the reads).
+ */
+export function coarseContext(candles: Candle[], granularity: CoarseGranularity): CoarseContext | null {
+  if (candles.length < 8) return null;
+  const last = candles[candles.length - 1];
+  const prev = candles[candles.length - 2]; // previous completed period relative to the last row
+
+  const prevHigh = prev.high;
+  const prevLow = prev.low;
+  const vsPrev: CoarseContext["vsPrev"] =
+    last.close > prevHigh ? "above-both" : last.close < prevLow ? "below-both" : "inside";
+
+  const leg = candles.slice(-1 - LEG_PERIODS, -1); // LEG_PERIODS completed periods
+  const legHigh = Math.max(...leg.map((c) => c.high));
+  const legLow = Math.min(...leg.map((c) => c.low));
+  const span = legHigh - legLow;
+  const legPct = span > 0 ? Math.round(((last.close - legLow) / span) * 1000) / 10 : null;
+  const legLabel =
+    legPct === null ? null : legPct > 60 ? "premium" : legPct < 40 ? "discount" : "equilibrium";
+
+  // fractal pivots with a 2-bar arm on each side
+  const pivotHighs: number[] = [];
+  const pivotLows: number[] = [];
+  for (let i = 2; i < candles.length - 2; i++) {
+    const c = candles[i];
+    if (
+      c.high > candles[i - 1].high && c.high > candles[i - 2].high &&
+      c.high > candles[i + 1].high && c.high > candles[i + 2].high
+    ) pivotHighs.push(c.high);
+    if (
+      c.low < candles[i - 1].low && c.low < candles[i - 2].low &&
+      c.low < candles[i + 1].low && c.low < candles[i + 2].low
+    ) pivotLows.push(c.low);
+  }
+  let structure: CoarseContext["structure"] = null;
+  if (pivotHighs.length >= 2 && pivotLows.length >= 2) {
+    const hh = pivotHighs[pivotHighs.length - 1] > pivotHighs[pivotHighs.length - 2];
+    const hl = pivotLows[pivotLows.length - 1] > pivotLows[pivotLows.length - 2];
+    structure = hh && hl ? "bullish" : !hh && !hl ? "bearish" : "mixed";
+  }
+
+  let streakDir: "up" | "down" | null = null;
+  let streakCount = 0;
+  for (let i = candles.length - 1; i > 0; i--) {
+    const d = candles[i].close > candles[i - 1].close ? "up" : candles[i].close < candles[i - 1].close ? "down" : null;
+    if (d === null) break;
+    if (streakDir === null) streakDir = d;
+    if (d !== streakDir) break;
+    streakCount++;
+  }
+
+  return {
+    granularity,
+    lastClose: last.close,
+    lastTime: last.time,
+    prevHigh,
+    prevLow,
+    vsPrev,
+    legHigh,
+    legLow,
+    legPct,
+    legLabel,
+    structure,
+    swingsFound: pivotHighs.length + pivotLows.length,
+    streak: { dir: streakDir, count: streakCount },
+  };
 }

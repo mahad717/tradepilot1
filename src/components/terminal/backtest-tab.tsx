@@ -4,12 +4,14 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
 import { fmtDate } from "./format";
-import { parseCsvCandles, intervalLabelOfKey, type CsvParseSummary } from "@/lib/market/csv";
+import { parseCsvCandles, intervalLabelOfKey, granularityLabel, coarseContext, type CsvParseSummary, type CoarseContext } from "@/lib/market/csv";
 import type { BacktestResult, StrictnessComparisonRow, DimensionComparison, CompareDimension } from "@/lib/ict/backtest";
 import type { ConfluenceItem, RejectedSetupSample, TradeRecord } from "@/lib/ict/types";
 
 const metricCard = "rounded-lg border border-border bg-card px-3 py-2.5";
 const selectCls = "h-9 rounded-lg border border-border bg-background px-2 text-sm";
+/** label for the 6-period dealing range shown in the coarse-file macro context */
+const LEG_NAME: Record<string, string> = { daily: "6-day", weekly: "6-week", monthly: "6-month" };
 
 /** N/A-aware numeric display (spec §13). */
 function num(v: number | null | undefined, suffix = ""): string {
@@ -297,18 +299,27 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
   const [csvText, setCsvText] = useState<string | null>(null);
   const [csvName, setCsvName] = useState("");
   const [csvPreview, setCsvPreview] = useState<CsvParseSummary | null>(null);
+  const [csvCtx, setCsvCtx] = useState<CoarseContext | null>(null);
   const lastCsvRef = useRef<string | null>(null);
 
   async function onCsvFile(f: File | null) {
     setCsvPreview(null);
     setCsvText(null);
+    setCsvCtx(null);
     if (!f) return;
     setCsvName(f.name);
     try {
       const text = await f.text();
-      const { summary } = parseCsvCandles(text);
+      const { candles, summary } = parseCsvCandles(text);
       setCsvText(text);
       setCsvPreview(summary);
+      // coarse uploads can't run the engine — surface the higher-timeframe
+      // read they CAN answer instead of a dead end
+      setCsvCtx(
+        summary.granularity === "daily" || summary.granularity === "weekly" || summary.granularity === "monthly"
+          ? coarseContext(candles, summary.granularity)
+          : null
+      );
     } catch {
       setError("The file could not be read as text.");
     }
@@ -667,7 +678,12 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
             <span className="font-semibold">{csvName || "CSV"}</span>
             <span className="rounded bg-background/40 px-2 py-0.5 text-xs">{csvPreview.format}</span>
             <span className="text-xs text-muted-foreground">
-              {csvPreview.parsed} candles{csvPreview.detectedInterval ? ` · ${intervalLabelOfKey(csvPreview.detectedInterval)} detected` : ""}
+              {csvPreview.parsed} candles
+              {csvPreview.granularity === "weekly" || csvPreview.granularity === "monthly"
+                ? ` · ${granularityLabel(csvPreview.granularity).toUpperCase()} detected`
+                : csvPreview.detectedInterval
+                  ? ` · ${intervalLabelOfKey(csvPreview.detectedInterval)} detected`
+                  : ""}
               {" · "}{csvPreview.from ? new Date(csvPreview.from * 1000).toISOString().slice(0, 10) : "—"} → {csvPreview.to ? new Date(csvPreview.to * 1000).toISOString().slice(0, 10) : "—"}
               {csvPreview.skipped > 0 ? ` · ${csvPreview.skipped} rows skipped` : ""}
               {csvPreview.duplicatesRemoved > 0 ? ` · ${csvPreview.duplicatesRemoved} dupes removed` : ""}
@@ -676,11 +692,47 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
           </div>
           {csvPreview.parsed < 150 && (
             <p className="mt-1 text-xs text-red-300">
-              Below the engine's 150-candle minimum — upload a longer history before running.
-              {csvPreview.detectedSeconds !== null && csvPreview.detectedSeconds >= 86400
-                ? " This file is DAILY data: ICT intraday models (kill zones, session liquidity, FVG precision) cannot be observed on daily bars — download 5m/15m/1H history instead."
-                : " For meaningful ICT results, several months of 5m/15m/1H candles are the sweet spot."}
+              {csvPreview.granularity === "weekly" || csvPreview.granularity === "monthly"
+                ? `Below the engine's 150-candle minimum — the engine cannot run on ${granularityLabel(csvPreview.granularity)} bars. ICT backtesting needs INTRADAY history: 5m/15m/1H candles (several months' worth works best). Investing.com's Historical Data page offers a Time-frame selector for intraday downloads over a limited range; Dukascopy's free historical data export covers years of 5m/15m XAUUSD. This file stays useful as macro context below.`
+                : csvPreview.detectedSeconds !== null && csvPreview.detectedSeconds >= 86400
+                  ? "Below the engine's 150-candle minimum — upload a longer history before running. This file is DAILY data: ICT intraday models (kill zones, session liquidity, FVG precision) cannot be observed on daily bars — download 5m/15m/1H history instead."
+                  : "Below the engine's 150-candle minimum — upload a longer history before running. For meaningful ICT results, several months of 5m/15m/1H candles are the sweet spot."}
             </p>
+          )}
+          {csvCtx && (
+            <div className="mt-2 rounded border border-border/60 bg-background/20 px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Macro context from this file · {granularityLabel(csvCtx.granularity)} · informational only
+              </p>
+              <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-xs md:grid-cols-3">
+                <span>Last close: <b>{csvCtx.lastClose.toFixed(2)}</b></span>
+                <span>
+                  vs previous period:{" "}
+                  <b>
+                    {csvCtx.vsPrev === "above-both"
+                      ? `above ${csvCtx.prevHigh.toFixed(2)} (buy-side liquidity taken)`
+                      : csvCtx.vsPrev === "below-both"
+                        ? `below ${csvCtx.prevLow.toFixed(2)} (sell-side liquidity taken)`
+                        : `inside ${csvCtx.prevLow.toFixed(2)}–${csvCtx.prevHigh.toFixed(2)}`}
+                  </b>
+                </span>
+                <span>
+                  {LEG_NAME[csvCtx.granularity]} range {csvCtx.legLow.toFixed(2)}–{csvCtx.legHigh.toFixed(2)}:{" "}
+                  <b>
+                    {csvCtx.legPct !== null ? `${csvCtx.legPct}% — ${csvCtx.legLabel}` : "flat"}
+                  </b>
+                </span>
+                <span>
+                  Swing structure:{" "}
+                  <b>{csvCtx.structure === null ? "not enough pivots" : csvCtx.structure}</b>{" "}
+                  <span className="text-muted-foreground">({csvCtx.swingsFound} pivots)</span>
+                </span>
+                <span>
+                  Close streak:{" "}
+                  <b>{csvCtx.streak.dir === null ? "flat" : `${csvCtx.streak.count} × ${csvCtx.streak.dir}`}</b>
+                </span>
+              </div>
+            </div>
           )}
           {csvPreview.warnings.map((w, i) => (
             <p key={i} className="mt-1 text-xs text-amber-300">{w}</p>
