@@ -380,3 +380,26 @@ Stage Summary:
   tradeDetail params) left in place, undocumented in the UI.
 - Known fragility: deep full-payload responses (full=detail mode) still
   exceed the Worker ceiling by design — the UI uses compact automatically.
+
+---
+Task ID: 15
+Agent: Super Z (main agent)
+Task: User request — "Can we use this historical data for backtesting only instead of twelvedata api" (uploaded XAU_USD Historical Data.csv). Add a CSV data source to the backtest engine; keep all honesty/accounting guarantees.
+
+Work Log:
+- Assessed the upload: Investing.com DAILY export, 23 rows (Date/Price/Open/High/Low/Vol./Change %, BOM, quoted fields, comma thousands, newest-first). Too small to run (<150-candle minimum) but exactly the format the feature must ingest.
+- NEW src/lib/market/csv.ts — isomorphic parser (no server-only; client previews the same file the server re-parses authoritatively): Investing.com + generic OHLC + headerless positional layouts; unix s/ms, ISO, YYYY.MM.DD, month names, MM/DD vs DD/MM auto-flip (flip only when day>12 impossible otherwise); comma-thousands; OHLC validation; chronological re-sort; first-occurrence dedupe; median-gap timeframe detection snapped to 5m/15m/1H/4H/1D with irregularity probe (p90 > 8× median); warnings for daily/coarse data, <150 candles, >25k cap.
+- runBacktest csvCandles path: zero upstream fetch (fetch accounting requested=received=csvBars, shortfall 0, requests 0 — the CSV source structurally kills the P1 deep-fetch shortfall problem); SMT companion deliberately disabled with honest note (mixing an uploaded series with a live API companion would fabricate divergences); ltf ambiguity fetch skipped on CSV; CSV provenance line injected into dataQuality.note; tailored <150 error naming the detected timeframe; daily-gap audit fix — isWeekendGap now treats Fri→Mon ≤96h as expected when intervalSec ≥ 86400.
+- params.ts extracted from GET route (one validation source of truth; bars/interval optional on the CSV route, mandatory on GET); GET route refactored onto it — behavior identical.
+- NEW POST /api/backtest/csv: { csv } body + same query knobs; interval auto-detected (manual param ignored with warning if it disagrees with detected spacing by >±50%); bars = full file capped at most-recent 25,000; auto-compact for >5000 bars (audit/confluence stripped, tradeDetail on-demand replay supported); sensitivity + compareDimension + compareStrictness all run on the uploaded window (signatures extended with csvCandles/csvSummary).
+- backtest-tab.tsx: Data source selector (TwelveData API | Uploaded CSV); file picker; client-side parse preview panel (format chip, candles, detected TF, date range, skipped/dupes/re-sorted, red <150 message with daily-data guidance, amber warnings); timeframe+bars selects disabled in CSV mode ("detected from file"); Run gated until ≥150 usable candles; CSV runs POST to the csv endpoint and trade-detail loads replay the stored CSV.
+- Tests: bun parser suite scripts/test-csv-parser.ts — 21 checks across the real upload + 5 synthetic fixtures, ALL PASS (2 initial failures were wrong test expectations, fixed: real file IS newest-first; dirty fixture has 3 unique candles).
+- Live route tests on the dev server: real daily file → honest 400 "CSV data has only 23 usable 1D candles… upload a longer history"; synthetic 7,480-bar 15m file → HTTP 200, source CSV, interval auto 15min, 5 trades, compact auto-on, fetch shortfall 0, SMT "disabled (uploaded CSV)", provenance in data quality; tradeDetail replay OK (17 audit events, confluence loaded); validation parity (bogus ambiguity / unknown symbol → 400); GET route regression OK (dispatches correctly; 502 only because TWELVEDATA_API_KEY is unset in this dev env).
+- Fixed en route: removed stale minRR destructure in csv route (tsc), bun OOM → regenerated fixture via scripts/gen-test-csv.py.
+- tsc clean + eslint clean on all touched files. Synthetic fixture artifacts: upload/synthetic-xauusd-15m.csv (test-only).
+
+Stage Summary:
+- Committed d25d996. NOT deployed — wrangler unauthenticated in this environment; run `npm run deploy` with credentials to ship to tradepilot1.gabeyre80.workers.dev.
+- The engine now runs "for backtesting only" on uploaded history end-to-end with no TwelveData involvement: no API credits, no rate limits, no deep-fetch shortfall, byte-identical engine core and diagnostics.
+- User's current file is daily/23-row — the UI and API both say precisely what to upload instead (several months of 5m/15m/1H; Investing.com export format works as-is).
+- Next steps: user uploads a real intraday CSV (same export flow), then P1 WR batch continues on top of the CSV source (entry placement levers #3/#4 apply unchanged to CSV runs).
