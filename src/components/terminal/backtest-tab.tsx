@@ -326,10 +326,25 @@ export function BacktestTab({ symbol, interval }: { symbol: string; interval: st
       if (compact) params.set("compact", "1");
       lastParamsRef.current = params.toString();
       setCompactMode(compact);
-      const res = await fetch(`/api/backtest?${params.toString()}`);
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Backtest failed");
-      setResult(json);
+      // deep runs sit near the Worker resource ceiling — a failed attempt
+      // (isolate cold start, transient 503/1102) usually succeeds on retry
+      let json: Record<string, unknown> | null = null;
+      let lastErr = "Backtest failed";
+      for (let attempt = 0; attempt < (compact ? 3 : 1); attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 2500 * attempt));
+        const res = await fetch(`/api/backtest?${params.toString()}`);
+        try {
+          json = await res.json();
+        } catch {
+          lastErr = `Transient worker error (HTTP ${res.status}) — retrying…`;
+          continue;
+        }
+        if (res.ok && json) break;
+        lastErr = (json.error as string) ?? `HTTP ${res.status}`;
+        json = null;
+      }
+      if (!json) throw new Error(lastErr);
+      setResult(json as typeof result);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Backtest failed");
     } finally {
