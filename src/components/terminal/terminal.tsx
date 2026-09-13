@@ -50,7 +50,9 @@ export function Terminal() {
   const { accessToken, user, loading: authLoading } = useAuth();
   const [symbol, setSymbol] = useState<SymbolKey>("XAUUSD");
   const [interval, setIntervalKey] = useState<IntervalKey>("15min");
-  const [tab, setTab] = useState<TabId>("terminal");
+  // Front page lands on Signals (user directive); chart tab is one click away.
+  // Safe: loadSignals() runs on mount via the effect below, independent of tab.
+  const [tab, setTab] = useState<TabId>("signals");
 
   const [candles, setCandles] = useState<Candle[]>([]);
   const [source, setSource] = useState<DataSource>("LIVE");

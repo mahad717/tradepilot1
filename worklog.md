@@ -708,3 +708,20 @@ Work Log:
 Stage Summary:
 - Users can now opt in to "Alert me" on the terminal: when a new live signal fingerprint drops for the selected symbol+interval while the page is open, they get a desktop notification + toast + audible blip; clicking it lands on the Signals tab. Nothing else about the product changed — no engine defaults, no presets, no API.
 - Fingerprint-based dedupe means a setup that persists across re-evaluations of the same bar never spams; a changed entry/stop/target (a materially different signal) re-alerts once.
+
+---
+Task ID: 24
+Agent: main (Super Z)
+Task: "I want this page to be the default front page of the website, especially the Signals tab. Don't change anything else" (screenshot = the terminal app with Signals tab active).
+
+Work Log:
+- identified the routes: terminal = (app)/dashboard/page.tsx rendering <Terminal/> under the (app) layout (TERMINAL badge chrome, noindex); front page / = (site)/page.tsx marketing landing. No auth middleware — terminal renders for signed-out users (Sign in button is cosmetic gating for saved signals only).
+- moved the marketing landing intact: git mv (site)/page.tsx -> (site)/welcome/page.tsx and (site)/opengraph-image.tsx -> (site)/welcome/opengraph-image.tsx (every other marketing page has its own OG image, so the group-root fallback only ever served "/"). Only metadata edit in the moved file: canonical path "/" -> "/welcome" (otherwise /welcome would declare itself a duplicate of "/").
+- NEW (app)/page.tsx: front page "/" now renders the exact same <Terminal/> under the same (app) layout — pixel-identical to /dashboard, which still works for existing bookmarks. Kept noindex + "Trading Terminal | TradePilot" metadata, consistent with the (app) group's private posture.
+- terminal.tsx: default tab "terminal" -> "signals". Safe because loadSignals() already runs on mount via the [loadMarket, loadSignals] effect, independent of tab; the signals-tab refresh effect just re-fires once more on first manual tab click.
+- repointed "Back to site" (2x in terminal-header-right.tsx) "/" -> "/welcome" so the button doesn't reload the terminal. Deliberately NOT touched: site header/footer/breadcrumb/sign-in "back" links to "/" (they now lead to the terminal = requested front-page behavior), sitemap restructured minimally ("" entry -> "/welcome" 0.8/weekly since "/" is noindex), robots.txt untouched (allow "/" unaffected; (app) pages carry meta noindex).
+- VERIFIED: next build clean (no route conflict; manifest shows /(app)/page -> "/"); prerendered index.html contains terminal markers (TERMINAL badge, Signals, Alert me, SMT divergence) and zero marketing content; aria-selected lands on Signals with XAUUSD 15m defaults intact; welcome.html retains full landing content.
+
+Stage Summary:
+- Visiting the site root now opens the live terminal with the Signals tab active; the marketing landing is preserved unchanged at /welcome; /dashboard remains a working alias. Engine, presets, backtesting, signals API, auth: zero changes.
+- Known trade-off (documented, reversible): "/" is noindex like the rest of the terminal, so the searchable root page is gone — marketing pages (/xauusd-signals etc.) remain indexed.

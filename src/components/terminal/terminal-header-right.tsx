@@ -31,7 +31,7 @@ export function TerminalHeaderRight() {
           Sign out
         </Button>
         <Link
-          href="/"
+          href="/welcome"
           className="hidden h-8 items-center whitespace-nowrap rounded-lg border border-border px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground sm:inline-flex"
         >
           Back to site

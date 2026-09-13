@@ -21,7 +21,10 @@ export const metadata: Metadata = buildMetadata({
   title: "XAUUSD & XAGUSD ICT Signals, Analysis and Backtesting | TradePilot",
   description:
     "Rule-based XAUUSD and XAGUSD signals built on ICT and Smart Money Concepts — liquidity sweeps, market structure, FVGs and order blocks — with honest backtesting.",
-  path: "/",
+  // The live terminal is the front page ( src/app/(app)/page.tsx ); this
+  // marketing landing now lives at /welcome — canonical must match or the
+  // page would declare itself a duplicate of "/".
+  path: "/welcome",
   keywords: [
     "XAUUSD signals",
     "XAGUSD signals",

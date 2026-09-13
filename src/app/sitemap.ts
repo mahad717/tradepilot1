@@ -14,7 +14,8 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: number;
     changeFrequency: "daily" | "weekly" | "monthly";
   }[] = [
-    { path: "", priority: 1.0, changeFrequency: "daily" },
+    // "/" is now the live terminal (noindex) — the public landing lives at /welcome
+    { path: "/welcome", priority: 0.8, changeFrequency: "weekly" },
     { path: "/xauusd", priority: 0.9, changeFrequency: "weekly" },
     { path: "/xagusd", priority: 0.9, changeFrequency: "weekly" },
     { path: "/xauusd-signals", priority: 0.9, changeFrequency: "daily" },
