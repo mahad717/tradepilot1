@@ -1,19 +1,27 @@
 import type { Metadata } from "next";
-import { PRIVATE_ROBOTS } from "@/lib/seo";
+import { buildMetadata } from "@/lib/seo";
 import { Terminal } from "@/components/terminal/terminal";
 
-export const metadata: Metadata = {
-  title: "Trading Terminal | TradePilot",
-  robots: PRIVATE_ROBOTS,
-};
+// Front page = the live terminal, Signals tab active by default (user
+// directive). Indexable for SEO (user directive): full public metadata
+// via buildMetadata — canonical "/", index/follow, OG + Twitter tags;
+// the social card comes from the colocated opengraph-image.tsx.
+// /dashboard keeps its private noindex metadata — only "/" is public.
+export const metadata: Metadata = buildMetadata({
+  title: "Live XAUUSD ICT Terminal — Signals & SMT | TradePilot",
+  description:
+    "The live ICT trading terminal for gold: model-verified XAUUSD signals on every closed candle, liquidity sweeps, market structure shifts and SMT divergence.",
+  path: "/",
+  keywords: [
+    "live XAUUSD signals",
+    "ICT trading terminal",
+    "live gold signals",
+    "smart money concepts terminal",
+    "SMT divergence",
+    "liquidity sweep",
+  ],
+});
 
-/**
- * Front page = the live trading terminal, Signals tab active by default
- * (user directive). Renders the exact same component as /dashboard so
- * both URLs stay pixel-identical; the terminal chrome comes from the
- * (app) layout. Kept noindex like the rest of the (app) group — the
- * public marketing site lives under (site), landing now at /welcome.
- */
 export default function TerminalHomePage() {
   return (
     <main className="flex flex-1 flex-col">

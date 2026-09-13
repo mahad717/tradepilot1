@@ -14,7 +14,9 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: number;
     changeFrequency: "daily" | "weekly" | "monthly";
   }[] = [
-    // "/" is now the live terminal (noindex) — the public landing lives at /welcome
+    // "/" is the live terminal, indexable (public metadata + OG card)
+    { path: "", priority: 1.0, changeFrequency: "daily" },
+    // public marketing landing
     { path: "/welcome", priority: 0.8, changeFrequency: "weekly" },
     { path: "/xauusd", priority: 0.9, changeFrequency: "weekly" },
     { path: "/xagusd", priority: 0.9, changeFrequency: "weekly" },

@@ -725,3 +725,17 @@ Work Log:
 Stage Summary:
 - Visiting the site root now opens the live terminal with the Signals tab active; the marketing landing is preserved unchanged at /welcome; /dashboard remains a working alias. Engine, presets, backtesting, signals API, auth: zero changes.
 - Known trade-off (documented, reversible): "/" is noindex like the rest of the terminal, so the searchable root page is gone — marketing pages (/xauusd-signals etc.) remain indexed.
+
+---
+Task ID: 25
+Agent: main (Super Z)
+Task: "Yes, make / indexable for SEO" (follow-up to Task 24 front-page change).
+
+Work Log:
+- (app)/page.tsx: replaced PRIVATE_ROBOTS with full public metadata via buildMetadata — index/follow, canonical site root, title "Live XAUUSD ICT Terminal — Signals & SMT | TradePilot" (53 chars), 140-160 char description, live-signal keyword set, OG + Twitter summary_large_image.
+- NEW (app)/opengraph-image.tsx: dedicated social card for "/" via createOGImage ("Live ICT trading terminal" / LIVE TERMINAL tag), dynamic = "force-dynamic" per the Cloudflare static-assets cache note; inherits harmlessly to /dashboard & /auth/signin (both stay noindex via their own metadata).
+- sitemap.ts: restored the "/" entry (1.0/daily) alongside /welcome (0.8/weekly). robots.ts untouched — allow: "/" already covers it and /dashboard disallow remains.
+- VERIFIED: next build clean (33/33 pages); prerendered index.html now carries <meta name="robots" content="index, follow">, canonical https://tradepilot1.gabeyre80.workers.dev, og:title, dynamic og:image route, twitter card; dashboard.html still noindex,nofollow.
+
+Stage Summary:
+- "/" is a first-class indexed page (the live terminal, Signals tab) with its own social card; the private (app) posture is preserved for /dashboard and /auth/signin; marketing landing remains at /welcome. Nothing functional changed.
