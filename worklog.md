@@ -785,3 +785,18 @@ Work Log:
 
 Stage Summary:
 - Build failure was a double-paste in the local Automate editor, not bot logic; the cBot file now carries the paste rule on its face and its one real unit bug (spread guard) is fixed. Nothing else changed — engine, presets, feed route, MT5 EA, panels, SEO all untouched.
+
+---
+Task ID: 29
+Agent: main (Super Z)
+Task: "build failed, only fix the cbot, don't change anything else" — second cTrader build round: 5 errors / 2 warnings, all CS1061 'LocalStorage' does not contain a definition for 'Save' (lines 190/198/+3 hidden).
+
+Work Log:
+- Positive confirmation first: the Task-28 paste diagnosis held — error count collapsed 318 -> 5, editor file ends at line 491 (single copy), error lines now INSIDE the shipped file. All remaining errors are the same token: LocalStorage.Save() x5.
+- VERIFIED against official docs (help.ctrader.com/ctrader-algo/references/Localstorage/LocalStorage/): method list is SetString/SetObject/GetString/GetObject/Remove/Flush/Reload — Save does not exist (0 hits). Flush signature is public abstract void Flush(LocalStorageScope localStorageScope) — NO parameterless overload (example: Flush(LocalStorageScope.Instance)); a bare Flush() would have traded CS1061 for CS7036. Docs note: data autosaves every minute; Flush forces an immediate write (crash-safety for the fingerprint dedupe).
+- FIX: replaced all 5 LocalStorage.Save(); with LocalStorage.Flush(LocalStorageScope.Instance); — the 5 fingerprint-persist sites (skip-existing, spread guard, below-min sizing, order success, 3-strike drop). LocalStorageScope is cAlgo.API, covered by the existing using.
+- SANITY: 0 Save remaining / 5 Flush(Instance), brace balance 0, usings still 35-40 before namespace 42; diff = public/tradepilot-cbot.cs only (5 lines). Everything else already compiled on 5.9.16 (the compiler reports all errors at once, so the surface is otherwise proven: HttpClient, System.Text.Json, PlaceLimitOrder+expiry, ClosePosition(volume), ModifyStopLossPrice, DrawStaticText, QuantityToVolumeInUnits, namespace-scope enum param).
+- Pushed f8e16ce (c59e434..f8e16ce, main).
+
+Stage Summary:
+- The cBot's remaining compile blocker was a non-existent API method; fixed with the docs-verified Flush(LocalStorageScope.Instance). Only the cBot file changed. User flow: Ctrl+A in the Automate editor -> paste the fresh download -> Build.
