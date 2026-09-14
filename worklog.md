@@ -756,3 +756,17 @@ Work Log:
 
 Stage Summary:
 - Copy trading is live as an opt-in EA workflow: download from the Signals tab → compile → allowlist WebRequest → attach → it auto-trades every new signal with the full lifecycle (entry, SL, ladder TPs, BE). Honest limitation documented: EA must be attached on the matching symbol/timeframe and the terminal must stay running 24/5 (VPS recommended).
+
+---
+Task ID: 27
+Agent: main (Super Z)
+Task: "Also create and add ctrader cbot version" (ref: help.ctrader.com cBot how-to) — port the MT5 copy-trading EA to cTrader.
+
+Work Log:
+- NEW public/tradepilot-cbot.cs (~430 lines C#): TradePilotCopier cBot for cTrader Automate (.NET 6 / System.Text.Json). Same contract as the MT5 EA: polls /api/signals/feed on a Timer, dedupes by fingerprint (persisted via LocalStorage so restarts never re-trade), one TradePilot trade at a time, entry mode AUTO (limit at setup entry with Server.Time+expiry, market when price already at/beyond entry — engine fill semantics), SL/TP passed as pip distances from entry, partial ladder ClosePosition(units) at TP1/TP2 (30/35/35 of INITIAL volume, min-volume guards), breakeven ModifyStopLossPrice after TP1 with cost offset, risk% sizing via Symbol.PipValue (per-unit) or fixed lots via QuantityToVolumeInUnits, spread guard, 3-strike order-failure consumption (retries transient errors without spamming), Positions.Opened event adoption, pre-existing positions (restart mid-trade) left to native SL/TP, gold DrawStaticText status box + full Automate log.
+- desk-check fixes before ship: nested enum parameter (cTrader UI cannot bind enums declared inside the robot class) moved to namespace scope; exit-side price for hit detection (Bid for longs / Ask for shorts); position object refreshed after partial closes before BE/TP2 modifies.
+- signals-tab panel generalized: NEW copy-trading-panel.tsx ("Copy trading — MetaTrader 5 or cTrader", two platform subsections + shared feed URL + risk warning); mt5-copy-panel.tsx removed; feed route doc comment mentions both bots.
+- VERIFIED: next build clean (33/33); JSON parsing uses System.Text.Json against the exact feed shape (no hand-rolled parser needed — the MT5 parser test suite already proves the payload shape).
+
+Stage Summary:
+- Both major retail platforms now have a first-class copier served from the site: MT5 EA (.mq5) and cTrader cBot (.cs), feature-parity lifecycles, zero credentials server-side. cTrader bot compiles inside the user's Automate editor (no dotnet/cAlgo SDK in this environment — noted honestly; the code sticks to documented cAlgo API surface only).

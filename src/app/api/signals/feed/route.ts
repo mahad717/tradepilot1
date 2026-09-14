@@ -7,8 +7,9 @@ export const dynamic = "force-dynamic";
 /**
  * GET /api/signals/feed?symbol=XAUUSD&interval=15min
  *
- * Machine-readable signal feed for the TradePilot MT5 copier EA
- * (public/tradepilot-copier.mq5). Same engine, same data, same
+ * Machine-readable signal feed for the TradePilot copier bots
+ * (public/tradepilot-copier.mq5 for MT5, public/tradepilot-cbot.cs
+ * for cTrader). Same engine, same data, same
  * no-repaint rule as /api/signals — but shaped for machines:
  * one `signal` object (or null) plus a STABLE fingerprint the EA
  * uses for dedupe (identical scheme to the browser alert bell:

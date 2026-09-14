@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
-import { Mt5CopyPanel } from "./mt5-copy-panel";
+import { CopyTradingPanel } from "./copy-trading-panel";
 import { fmtPrice } from "./format";
 import type { SignalCandidate, WhyNoTradeState } from "@/lib/ict/types";
 
@@ -347,7 +347,7 @@ export function SignalsTab({
         )}
       </section>
 
-      <Mt5CopyPanel symbol={symbol} interval={interval} />
+      <CopyTradingPanel symbol={symbol} interval={interval} />
     </div>
   );
 }
