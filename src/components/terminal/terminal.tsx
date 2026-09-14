@@ -296,6 +296,8 @@ export function Terminal() {
             whyNoTrade={whyNoTrade}
             savedSignals={savedSignals}
             onRefreshSaved={loadSaved}
+            symbol={symbol}
+            interval={interval}
           />
         )}
 

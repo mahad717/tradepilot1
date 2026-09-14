@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "./auth-provider";
+import { Mt5CopyPanel } from "./mt5-copy-panel";
 import { fmtPrice } from "./format";
 import type { SignalCandidate, WhyNoTradeState } from "@/lib/ict/types";
 
@@ -200,6 +201,8 @@ export function SignalsTab({
   whyNoTrade,
   savedSignals,
   onRefreshSaved,
+  symbol,
+  interval,
 }: {
   candidates: SignalCandidate[];
   loading: boolean;
@@ -209,6 +212,8 @@ export function SignalsTab({
   whyNoTrade: WhyNoTradeState | null;
   savedSignals: SavedSignalRow[];
   onRefreshSaved: () => void;
+  symbol: string;
+  interval: string;
 }) {
   const { accessToken, user } = useAuth();
   const [saveStates, setSaveStates] = useState<Record<string, "idle" | "saving" | "saved" | "error" | "anonymous">>({});
@@ -341,6 +346,8 @@ export function SignalsTab({
           </ul>
         )}
       </section>
+
+      <Mt5CopyPanel symbol={symbol} interval={interval} />
     </div>
   );
 }

@@ -739,3 +739,20 @@ Work Log:
 
 Stage Summary:
 - "/" is a first-class indexed page (the live terminal, Signals tab) with its own social card; the private (app) posture is preserved for /dashboard and /auth/signin; marketing landing remains at /welcome. Nothing functional changed.
+
+---
+Task ID: 26
+Agent: main (Super Z)
+Task: "Can we add copy trading feature that I can put mt5 account credentials and when new signals drop the mt5 account places order or position"
+
+Work Log:
+- architecture decision: Cloudflare Workers cannot host MT5 (Windows-only bridge); the creds-in-website path requires a paid third-party cloud (MetaApi) holding the broker password AND MT5's single-TP-per-position limit prevents the strategy's 30/35/35 partial ladder server-side. Chose the PULL-based EA copier: a .mq5 Expert Advisor runs inside the user's own terminal (PC/VPS), polls the signal feed, executes natively — credentials never leave the machine, zero subscriptions, full ladder + BE possible.
+- NEW /api/signals/feed route: machine-readable version of /api/signals (same generateSignals, same no-repaint rule) — emits {symbol, interval, evaluatedAt, signal:{fingerprint, side, entry, stopLoss, targets[], grade, tier, confidence, killzone}|null}. Fingerprint scheme identical to the browser alert bell (side|entry|stopLoss|targets joined by |). Cache-Control: no-store for fresh EA polls.
+- NEW public/tradepilot-copier.mq5 (~560 lines): CTrade-based EA. Inputs: feed URL, poll 30s, kill switch, entry mode AUTO (limit at setup entry when price hasn't arrived, market when it has — mirrors engine fill semantics) or always-market, 45m order expiry with GTC fallback, fixed lots or risk%-of-balance sizing, spread guard, magic number, ladder 30/35/35, BE move after TP1 (+10pt cost offset, mirrors tp1cost). Fingerprint dedupe persisted via GlobalVariable hash (survives restarts, never re-trades a signal); one TradePilot position at a time; pending-order expiry detection; pre-existing positions (EA restarted mid-trade) left to native SL/TP rather than guessing ladder state; chart Comment() status line; clear WebRequest-4014 setup guidance.
+- NEW mt5-copy-panel.tsx: collapsible "Copy to MT5" card at the bottom of the Signals tab — EA download button, 3 setup steps (install+compile, WebRequest allowlist, attach to XAUUSD M15 + Algo Trading), live feed URL (origin-aware), risk warning. SignalsTab now receives symbol/interval props (passed from terminal.tsx).
+- VERIFIED: next build clean (33/33); dev-server smoke test — /api/signals/feed routes + validates symbols (local env lacks TWELVEDATA_API_KEY so signal generation errors gracefully; prod has the key); 1:1 TS port of the EA's JSON parser tested against the real feed shape — 5/5 PASS (nested object extraction incl. the brace-aware fix, 3-target & 2-target cases, null signal, hash determinism/separation/entry-price sensitivity).
+- BUG CAUGHT DURING SELF-REVIEW: naive JSON value scan truncated the nested "signal" object at its first internal comma → added depth-aware scanning for {/[ values before any real test ran.
+- Files: feed route + EA + panel (new), signals-tab.tsx / terminal.tsx (prop passthrough + panel mount). Engine, presets, backtest, alert bell: ZERO changes.
+
+Stage Summary:
+- Copy trading is live as an opt-in EA workflow: download from the Signals tab → compile → allowlist WebRequest → attach → it auto-trades every new signal with the full lifecycle (entry, SL, ladder TPs, BE). Honest limitation documented: EA must be attached on the matching symbol/timeframe and the terminal must stay running 24/5 (VPS recommended).
