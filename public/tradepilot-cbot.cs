@@ -187,7 +187,7 @@ namespace cAlgo.Robots
             {
                 _lastFingerprint = sig.Fingerprint;
                 LocalStorage.SetString(FpKey, _lastFingerprint);
-                LocalStorage.Save();
+                LocalStorage.Flush(LocalStorageScope.Instance);
                 UpdateStatus("signal skipped (TradePilot trade already open)");
                 return;
             }
@@ -195,7 +195,7 @@ namespace cAlgo.Robots
             {
                 _lastFingerprint = sig.Fingerprint;
                 LocalStorage.SetString(FpKey, _lastFingerprint);
-                LocalStorage.Save();
+                LocalStorage.Flush(LocalStorageScope.Instance);
                 UpdateStatus("signal skipped (spread guard)");
                 return;
             }
@@ -255,7 +255,7 @@ namespace cAlgo.Robots
                 UpdateStatus("sizing below the symbol minimum — signal skipped");
                 _lastFingerprint = sig.Fingerprint;
                 LocalStorage.SetString(FpKey, _lastFingerprint);
-                LocalStorage.Save();
+                LocalStorage.Flush(LocalStorageScope.Instance);
                 return;
             }
 
@@ -284,7 +284,7 @@ namespace cAlgo.Robots
                 _failCount = 0;
                 _lastFingerprint = sig.Fingerprint;
                 LocalStorage.SetString(FpKey, _lastFingerprint);
-                LocalStorage.Save();
+                LocalStorage.Flush(LocalStorageScope.Instance);
 
                 _pending = sig;
                 _managing = false;          // adopted from Positions.Opened
@@ -308,7 +308,7 @@ namespace cAlgo.Robots
                     _failCount = 0;
                     _lastFingerprint = sig.Fingerprint;
                     LocalStorage.SetString(FpKey, _lastFingerprint);
-                    LocalStorage.Save();
+                    LocalStorage.Flush(LocalStorageScope.Instance);
                     UpdateStatus("order failed 3x — signal dropped");
                 }
                 else
