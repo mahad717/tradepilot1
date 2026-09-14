@@ -770,3 +770,18 @@ Work Log:
 
 Stage Summary:
 - Both major retail platforms now have a first-class copier served from the site: MT5 EA (.mq5) and cTrader cBot (.cs), feature-parity lifecycles, zero credentials server-side. cTrader bot compiles inside the user's Automate editor (no dotnet/cAlgo SDK in this environment — noted honestly; the code sticks to documented cAlgo API surface only).
+
+---
+Task ID: 28
+Agent: main (Super Z)
+Task: "Don't change anything else only fix the cbot" — cTrader build failed with 318 errors / 28 warnings (user screenshot: cTrader 5.9.16, first errors CS1529 "A using clause must precede all other elements" at Tradepilot.cs lines 505-507).
+
+Work Log:
+- ROOT-CAUSED from the error line numbers alone: the shipped file is 478 lines with its using block at the top (lines 27-32 of the original). CS1529 can only fire when using statements appear AFTER other elements; user's first error at line 505 = 478 + 26 — exactly where the using block lands if the source is appended BELOW the existing editor content instead of replacing it. The second copy duplicates every symbol -> 318 cascading errors. Verified production serves the correct file (curl: 200, etag, 478 lines, cache-control must-revalidate) and the panel links /tradepilot-cbot.cs correctly -> paste artifact, not a repo defect.
+- FIX 1 (paste-proofing, same file only): prominent "PASTE RULE - READ BEFORE BUILDING" banner in the .cs header after the SETUP steps — Ctrl+A (select ALL) before pasting; explains that appending below old content produces hundreds of CS1529 errors and that the fix is Ctrl+A + paste again + rebuild. Steps 1-4 of SETUP kept contiguous.
+- FIX 2 (real defect found during re-review): spread guard was Symbol.Spread / Symbol.PipSize > MaxSpreadPips — cAlgo's Symbol.Spread is already quoted in pips, so dividing by PipSize inflated the guard ~100x on gold (2.5 pips real -> 250) and would have rejected EVERY signal once Max Spread was set (default 0 = off, which is why it never surfaced). Now (Symbol.Ask - Symbol.Bid) / Symbol.PipSize — unit-explicit and immune to Spread-property semantics.
+- SANITY: 490 lines, brace/paren balance 0/0, all 6 using lines at 35-40 before namespace at 42, single class + single enum; git diff = public/tradepilot-cbot.cs only (+13/-1). No Next build needed (public asset, zero app-code surface).
+- Pushed c59e434 (2c50566..c59e434, main). Cloudflare auto-deploys; must-revalidate means re-download serves the fresh file immediately.
+
+Stage Summary:
+- Build failure was a double-paste in the local Automate editor, not bot logic; the cBot file now carries the paste rule on its face and its one real unit bug (spread guard) is fixed. Nothing else changed — engine, presets, feed route, MT5 EA, panels, SEO all untouched.
