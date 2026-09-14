@@ -20,6 +20,14 @@
 //|      (the bot only calls the TradePilot feed).                   |
 //|   4. Set your lot size or risk % in the parameters, press Play.  |
 //|                                                                  |
+//|   *** PASTE RULE — READ BEFORE BUILDING ***                      |
+//|   This file must REPLACE the entire editor content: click into   |
+//|   the code editor, press Ctrl+A (select ALL), then paste. If the |
+//|   code is appended below the old content instead, the build      |
+//|   fails with hundreds of CS1529 "A using clause must precede     |
+//|   all other elements" errors — a using block is only legal at    |
+//|   the very top of the file. Fix: Ctrl+A, paste again, rebuild.   |
+//|                                                                  |
 //|   RISK WARNING: this bot places REAL orders on a REAL account.   |
 //|   Test on a DEMO account first. TradePilot signals are           |
 //|   educational strategy output, not financial advice.             |
@@ -459,7 +467,11 @@ namespace cAlgo.Robots
 
         private bool SpreadTooWide()
         {
-            return MaxSpreadPips > 0 && Symbol.Spread / Symbol.PipSize > MaxSpreadPips;
+            // spread expressed in pips: (Ask - Bid) / PipSize. Deliberately NOT
+            // Symbol.Spread / PipSize — Symbol.Spread is already quoted in pips,
+            // so dividing by PipSize inflated the guard ~100x on gold and would
+            // have rejected every signal once Max Spread was set.
+            return MaxSpreadPips > 0 && (Symbol.Ask - Symbol.Bid) / Symbol.PipSize > MaxSpreadPips;
         }
 
         private void UpdateStatus(string s)
